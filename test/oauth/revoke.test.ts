@@ -78,11 +78,7 @@ async function getTokenPair(
 }
 
 /** POST /revoke helper */
-async function revoke(
-  app: ReturnType<typeof makeApp>,
-  token: string,
-  clientId: string,
-) {
+async function revoke(app: ReturnType<typeof makeApp>, token: string, clientId: string) {
   return app.request("/revoke", {
     method: "POST",
     headers: { "content-type": "application/x-www-form-urlencoded" },
@@ -91,10 +87,7 @@ async function revoke(
 }
 
 /** GET a tools/list response status from /mcp with the given Bearer token. */
-async function mcpStatus(
-  app: ReturnType<typeof makeApp>,
-  token: string,
-): Promise<number> {
+async function mcpStatus(app: ReturnType<typeof makeApp>, token: string): Promise<number> {
   const res = await app.request("/mcp", {
     method: "POST",
     headers: {

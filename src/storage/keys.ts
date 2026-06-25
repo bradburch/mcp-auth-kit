@@ -3,8 +3,7 @@ export const authCodeKey = (code: string) => `mcp:auth_code:${code}`;
 export const accessTokenKey = (hash: string) => `mcp:token:${hash}`;
 export const refreshTokenKey = (hash: string) => `mcp:refresh:${hash}`;
 export const confirmKey = (token: string) => `mcp:confirm:${token}`;
-export const idempotencyKey = (userId: string, key: string) =>
-  `mcp:idempotent:${userId}:${key}`;
+export const idempotencyKey = (userId: string, key: string) => `mcp:idempotent:${userId}:${key}`;
 export const userRateKey = (userId: string, hourBucket: number) =>
   `mcp:rate:${userId}:${hourBucket}`;
 export const ipAuthRateKey = (ip: string, hourBucket: number) =>

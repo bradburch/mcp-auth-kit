@@ -9,9 +9,7 @@ describe("appointments example", () => {
     const slots = await callTool(app, token, "list_slots", {});
     expect(JSON.stringify(slots)).toContain("09:00");
     const preview = await callTool(app, token, "book_slot", { slot: "09:00" });
-    const confirmationToken = /"confirmationToken":"([^"]+)"/.exec(
-      JSON.stringify(preview),
-    )![1];
+    const confirmationToken = /"confirmationToken":"([^"]+)"/.exec(JSON.stringify(preview))![1];
     const result = await callTool(app, token, "confirm_request", {
       confirmationToken,
       idempotencyKey: "k1",

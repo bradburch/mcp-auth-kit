@@ -58,11 +58,7 @@ export interface ObservabilityHooks {
    * token_refreshed, token_revoked). Fire-and-forget — errors are swallowed.
    */
   onAudit?(event: {
-    event:
-      | "client_registered"
-      | "token_issued"
-      | "token_refreshed"
-      | "token_revoked";
+    event: "client_registered" | "token_issued" | "token_refreshed" | "token_revoked";
     userId?: string;
     clientId?: string;
   }): Promise<void>;
@@ -70,11 +66,7 @@ export interface ObservabilityHooks {
    * Called after a mutating tool's execute phase succeeds. Awaited by the
    * confirm flow (durable side-effect, e.g. an audit-ledger write).
    */
-  onMutation?(event: {
-    userId: string;
-    toolName: string;
-    summary: string;
-  }): Promise<void>;
+  onMutation?(event: { userId: string; toolName: string; summary: string }): Promise<void>;
 }
 
 /** Runtime context passed to every tool handler. */
@@ -107,10 +99,7 @@ export interface MutatingToolDef {
   annotations?: Record<string, unknown>;
   mutating: {
     /** Phase 1: validate input and return a human-readable preview. */
-    preview(
-      input: unknown,
-      ctx: ToolContext,
-    ): Promise<{ summary: string; data: unknown }>;
+    preview(input: unknown, ctx: ToolContext): Promise<{ summary: string; data: unknown }>;
     /** Phase 2: carry out the side effect using the preview data. */
     execute(data: unknown, ctx: ToolContext): Promise<unknown>;
   };

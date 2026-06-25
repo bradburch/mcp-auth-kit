@@ -38,11 +38,7 @@ export type {
 // sub-path mounting, etc.) rather than using createMcpServer directly.
 
 export { createOAuthProvider } from "./oauth/provider.js";
-export type {
-  OAuthProvider,
-  OAuthProviderConfig,
-  TokenPair,
-} from "./oauth/provider.js";
+export type { OAuthProvider, OAuthProviderConfig, TokenPair } from "./oauth/provider.js";
 
 export { mountOAuthRoutes } from "./oauth/routes.js";
 export type { OAuthRouteDeps } from "./oauth/routes.js";

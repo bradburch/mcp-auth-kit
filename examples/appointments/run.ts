@@ -11,7 +11,5 @@ import { createAppointmentsServer } from "./server.js";
 const port = Number(process.env.PORT ?? 3000);
 serve({ fetch: createAppointmentsServer().fetch, port }, () => {
   console.log(`Appointments MCP server listening on http://localhost:${port}`);
-  console.log(
-    `Discovery: http://localhost:${port}/.well-known/oauth-authorization-server`,
-  );
+  console.log(`Discovery: http://localhost:${port}/.well-known/oauth-authorization-server`);
 });

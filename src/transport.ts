@@ -12,12 +12,7 @@ import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/
 import type { OAuthProvider } from "./oauth/provider.js";
 import type { RateLimiter } from "./rate-limit.js";
 import type { KvLike } from "./storage/types.js";
-import type {
-  ToolContext,
-  ToolDef,
-  MutatingToolDef,
-  ObservabilityHooks,
-} from "./config.js";
+import type { ToolContext, ToolDef, MutatingToolDef, ObservabilityHooks } from "./config.js";
 import { registerTools } from "./tools/registry.js";
 import { bodyTooLarge, readBodyTooLarge } from "./http/body-limit.js";
 
@@ -51,10 +46,7 @@ export interface McpRequestDeps {
  * build a ToolContext, spin up a fresh McpServer + transport, register the granted tools,
  * and dispatch. Returns a JSON-RPC error Response on auth/rate-limit failure.
  */
-export async function handleMcpRequest(
-  req: Request,
-  deps: McpRequestDeps,
-): Promise<Response> {
+export async function handleMcpRequest(req: Request, deps: McpRequestDeps): Promise<Response> {
   // Reject oversized bodies early (pre-auth DoS guard).
   const earlyTooLarge = bodyTooLarge(req);
   if (earlyTooLarge) return earlyTooLarge;
@@ -70,10 +62,10 @@ export async function handleMcpRequest(
   const resourceMetadataUrl = `${deps.baseUrl}/.well-known/oauth-protected-resource`;
   const wwwAuthenticate = `Bearer resource_metadata="${resourceMetadataUrl}"`;
   const unauthorized = () =>
-    Response.json(
-      jsonRpcError(JSON_RPC_ERROR.AUTH_REQUIRED, "Authentication required"),
-      { status: 401, headers: { "WWW-Authenticate": wwwAuthenticate } },
-    );
+    Response.json(jsonRpcError(JSON_RPC_ERROR.AUTH_REQUIRED, "Authentication required"), {
+      status: 401,
+      headers: { "WWW-Authenticate": wwwAuthenticate },
+    });
 
   // Extract Bearer token.
   const authHeader = req.headers.get("Authorization") ?? "";
@@ -96,10 +88,10 @@ export async function handleMcpRequest(
   // Rate limit by user.
   const allowed = await deps.rateLimiter.checkUser(auth.userId);
   if (!allowed) {
-    return Response.json(
-      jsonRpcError(JSON_RPC_ERROR.RATE_LIMITED, "Rate limit exceeded"),
-      { status: 429, headers: { "Retry-After": "60" } },
-    );
+    return Response.json(jsonRpcError(JSON_RPC_ERROR.RATE_LIMITED, "Rate limit exceeded"), {
+      status: 429,
+      headers: { "Retry-After": "60" },
+    });
   }
 
   // Build the per-request tool context.
@@ -150,10 +142,9 @@ export async function handleMcpRequest(
   await server.close();
 
   if (!response) {
-    return Response.json(
-      jsonRpcError(JSON_RPC_ERROR.INTERNAL, "No response from transport"),
-      { status: 500 },
-    );
+    return Response.json(jsonRpcError(JSON_RPC_ERROR.INTERNAL, "No response from transport"), {
+      status: 500,
+    });
   }
   return response;
 }

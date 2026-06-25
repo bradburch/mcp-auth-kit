@@ -4,10 +4,7 @@
 import type { Hono } from "hono";
 import type { OAuthProvider } from "./provider.js";
 import type { IdentityConfig, ObservabilityHooks } from "../config.js";
-import {
-  renderAuthorizePage,
-  type AuthorizePageParams,
-} from "../identity/page.js";
+import { renderAuthorizePage, type AuthorizePageParams } from "../identity/page.js";
 
 import type { RateLimiter } from "../rate-limit.js";
 import { extractClientIp } from "../http/client-ip.js";
@@ -88,9 +85,7 @@ function authorizePageParams(
  * Extract the 8 standard OAuth params from a flat string map (query string or form body).
  * Shared by GET /authorize (query params) and POST /authorize (form body).
  */
-function extractOAuthParams(
-  source: Record<string, string>,
-): Record<string, string> {
+function extractOAuthParams(source: Record<string, string>): Record<string, string> {
   return {
     response_type: source.response_type ?? "",
     client_id: source.client_id ?? "",
@@ -150,30 +145,17 @@ export function mountOAuthRoutes(
     try {
       body = await c.req.json();
     } catch {
-      return c.json(
-        oauthError("invalid_client_metadata", "Request body must be JSON"),
-        400,
-      );
+      return c.json(oauthError("invalid_client_metadata", "Request body must be JSON"), 400);
     }
 
     const redirectUris = body.redirect_uris;
-    if (
-      !redirectUris ||
-      !Array.isArray(redirectUris) ||
-      redirectUris.length === 0
-    ) {
-      return c.json(
-        oauthError("invalid_client_metadata", "redirect_uris required"),
-        400,
-      );
+    if (!redirectUris || !Array.isArray(redirectUris) || redirectUris.length === 0) {
+      return c.json(oauthError("invalid_client_metadata", "redirect_uris required"), 400);
     }
 
     if ((redirectUris as string[]).some((u: string) => hasFragment(u))) {
       return c.json(
-        oauthError(
-          "invalid_redirect_uri",
-          "redirect_uris must not contain fragments",
-        ),
+        oauthError("invalid_redirect_uri", "redirect_uris must not contain fragments"),
         400,
       );
     }
@@ -183,12 +165,8 @@ export function mountOAuthRoutes(
     try {
       parsedUris = (redirectUris as string[]).map((u: string) => {
         const url = new URL(u);
-        const isLocal =
-          url.hostname === "localhost" || url.hostname === "127.0.0.1";
-        if (
-          url.protocol !== "https:" &&
-          !(url.protocol === "http:" && isLocal)
-        ) {
+        const isLocal = url.hostname === "localhost" || url.hostname === "127.0.0.1";
+        if (url.protocol !== "https:" && !(url.protocol === "http:" && isLocal)) {
           throw new Error(`Invalid redirect URI scheme: ${url.protocol}`);
         }
         return url.toString();
@@ -206,8 +184,7 @@ export function mountOAuthRoutes(
     try {
       const result = await provider.registerClient({
         redirectUris: parsedUris,
-        clientName:
-          typeof body.client_name === "string" ? body.client_name : undefined,
+        clientName: typeof body.client_name === "string" ? body.client_name : undefined,
       });
       void fireAudit(hooks, {
         event: "client_registered",
@@ -241,10 +218,7 @@ export function mountOAuthRoutes(
     c.header("Content-Security-Policy", AUTHORIZE_CSP);
 
     const oauthParams = extractOAuthParams(
-      Object.fromEntries(new URL(c.req.url).searchParams.entries()) as Record<
-        string,
-        string
-      >,
+      Object.fromEntries(new URL(c.req.url).searchParams.entries()) as Record<string, string>,
     );
     const {
       client_id: clientId,
@@ -258,24 +232,16 @@ export function mountOAuthRoutes(
       return c.text("Missing required OAuth parameters", 400);
     }
     if (responseType !== "code") {
-      return c.text(
-        'Unsupported response_type. Only "code" is supported.',
-        400,
-      );
+      return c.text('Unsupported response_type. Only "code" is supported.', 400);
     }
     if (codeChallengeMethod !== "S256") {
-      return c.text(
-        "Unsupported code_challenge_method. Only S256 is supported.",
-        400,
-      );
+      return c.text("Unsupported code_challenge_method. Only S256 is supported.", 400);
     }
 
     if (!identity) {
       return c.text("No identity provider configured", 400);
     }
-    return c.html(
-      renderAuthorizePage(identity, authorizePageParams(oauthParams)),
-    );
+    return c.html(renderAuthorizePage(identity, authorizePageParams(oauthParams)));
   });
 
   // ── POST /authorize ────────────────────────────────────────────────────────
@@ -288,10 +254,7 @@ export function mountOAuthRoutes(
       const ip = extractClientIp(c.req.raw);
       const allowed = await rateLimiter.checkIpAuthorize(ip);
       if (!allowed) {
-        return c.json(
-          oauthError("temporarily_unavailable", "rate limit exceeded"),
-          429,
-        );
+        return c.json(oauthError("temporarily_unavailable", "rate limit exceeded"), 429);
       }
     }
 
@@ -317,16 +280,10 @@ export function mountOAuthRoutes(
     // Mirror GET /authorize: reject a missing code_challenge before doing any
     // identity work — otherwise a malicious POST could mint an un-redeemable code.
     if (!clientId || !redirectUri || !codeChallenge) {
-      return c.json(
-        oauthError("invalid_request", "Missing required OAuth parameters"),
-        400,
-      );
+      return c.json(oauthError("invalid_request", "Missing required OAuth parameters"), 400);
     }
     if (codeChallengeMethod !== "S256") {
-      return c.text(
-        "Unsupported code_challenge_method. Only S256 is supported.",
-        400,
-      );
+      return c.text("Unsupported code_challenge_method. Only S256 is supported.", 400);
     }
 
     // Collect identity field values from form body.
@@ -338,10 +295,7 @@ export function mountOAuthRoutes(
 
     function renderError(error: string) {
       if (!identity) {
-        return c.json(
-          oauthError("access_denied", "No identity provider configured"),
-          400,
-        );
+        return c.json(oauthError("access_denied", "No identity provider configured"), 400);
       }
       return c.html(
         renderAuthorizePage(
@@ -353,25 +307,18 @@ export function mountOAuthRoutes(
     }
 
     // Verify identity if an identity provider is configured.
-    let userId: string | null = null;
-    if (identity) {
-      userId = await identity.verify(identityFields);
-      if (userId === null) {
-        return renderError("Invalid credentials. Please try again.");
-      }
-    } else {
+    if (!identity) {
       // No identity provider — reject (can't issue code without a userId).
-      return c.json(
-        oauthError("access_denied", "No identity provider configured"),
-        400,
-      );
+      return c.json(oauthError("access_denied", "No identity provider configured"), 400);
+    }
+    const userId = await identity.verify(identityFields);
+    if (userId === null) {
+      return renderError("Invalid credentials. Please try again.");
     }
 
     // Issue auth code via provider (validates client + redirectUri internally).
     try {
-      const normalizedScopes = provider.normalizeScopes(
-        scope ? scope.split(" ") : [],
-      );
+      const normalizedScopes = provider.normalizeScopes(scope ? scope.split(" ") : []);
       const { code } = await provider.issueAuthCode({
         clientId,
         redirectUri,
@@ -405,10 +352,7 @@ export function mountOAuthRoutes(
       const ip = extractClientIp(c.req.raw);
       const allowed = await rateLimiter.checkIpToken(ip);
       if (!allowed) {
-        return c.json(
-          oauthError("temporarily_unavailable", "rate limit exceeded"),
-          429,
-        );
+        return c.json(oauthError("temporarily_unavailable", "rate limit exceeded"), 429);
       }
     }
 
@@ -419,10 +363,7 @@ export function mountOAuthRoutes(
     try {
       body = await parseBody(c.req.raw);
     } catch {
-      return c.json(
-        oauthError("invalid_request", "Unable to parse request body"),
-        400,
-      );
+      return c.json(oauthError("invalid_request", "Unable to parse request body"), 400);
     }
 
     const grantType = body.grant_type ?? "";
@@ -436,10 +377,7 @@ export function mountOAuthRoutes(
         const resource = body.resource ?? "";
 
         if (!code || !codeVerifier || !clientId || !redirectUri) {
-          return c.json(
-            oauthError("invalid_request", "Missing required parameters"),
-            400,
-          );
+          return c.json(oauthError("invalid_request", "Missing required parameters"), 400);
         }
 
         const tokens = await provider.exchangeCode({
@@ -456,10 +394,7 @@ export function mountOAuthRoutes(
         const refreshToken = body.refresh_token ?? "";
 
         if (!refreshToken || !clientId) {
-          return c.json(
-            oauthError("invalid_request", "Missing required parameters"),
-            400,
-          );
+          return c.json(oauthError("invalid_request", "Missing required parameters"), 400);
         }
 
         const tokens = await provider.refresh({ refreshToken, clientId });
@@ -467,10 +402,7 @@ export function mountOAuthRoutes(
         return c.json(tokenPairToResponse(tokens));
       } else {
         return c.json(
-          oauthError(
-            "unsupported_grant_type",
-            `grant_type "${grantType}" is not supported`,
-          ),
+          oauthError("unsupported_grant_type", `grant_type "${grantType}" is not supported`),
           400,
         );
       }
@@ -480,10 +412,7 @@ export function mountOAuthRoutes(
       if (msg.includes("Invalid or expired") || msg.includes("PKCE")) {
         return c.json(oauthError("invalid_grant", msg), 400);
       }
-      if (
-        msg.includes("invalid_client") ||
-        msg.includes("Client ID mismatch")
-      ) {
+      if (msg.includes("invalid_client") || msg.includes("Client ID mismatch")) {
         return c.json(oauthError("invalid_client", msg), 401);
       }
       if (msg.includes("Resource mismatch")) {
@@ -517,10 +446,7 @@ export function mountOAuthRoutes(
       // RFC 7009 §2.2.1: token belonging to a different client → 401.
       if (msg.includes("Token was not issued to this client")) {
         return c.json(
-          oauthError(
-            "unauthorized_client",
-            "Token was issued to a different client",
-          ),
+          oauthError("unauthorized_client", "Token was issued to a different client"),
           401,
         );
       }

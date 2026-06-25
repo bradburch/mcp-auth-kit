@@ -14,11 +14,7 @@ export interface RateLimiter {
   checkIpToken(ip: string): Promise<boolean>;
 }
 
-async function checkBucket(
-  storage: KvLike,
-  key: string,
-  limit: number,
-): Promise<boolean> {
+async function checkBucket(storage: KvLike, key: string, limit: number): Promise<boolean> {
   const raw = await storage.get(key);
   // NOTE: This read-modify-write is best-effort under concurrency — KV has no atomic
   // increment. Treat missing or non-numeric values as 0 to fail closed (never silently
@@ -40,18 +36,14 @@ export function createRateLimiter({
   config?: RateLimitConfig;
 }): RateLimiter {
   const userLimit = config.userPerHour ?? DEFAULT_USER_PER_HOUR;
-  const ipAuthLimit =
-    config.ipAuthorizePerHour ?? DEFAULT_IP_AUTHORIZE_PER_HOUR;
+  const ipAuthLimit = config.ipAuthorizePerHour ?? DEFAULT_IP_AUTHORIZE_PER_HOUR;
   const ipTokenLimit = config.ipTokenPerHour ?? DEFAULT_IP_TOKEN_PER_HOUR;
 
   const hourBucket = () => Math.floor(now() / MS_PER_HOUR);
 
   return {
-    checkUser: (userId) =>
-      checkBucket(storage, userRateKey(userId, hourBucket()), userLimit),
-    checkIpAuthorize: (ip) =>
-      checkBucket(storage, ipAuthRateKey(ip, hourBucket()), ipAuthLimit),
-    checkIpToken: (ip) =>
-      checkBucket(storage, ipTokenRateKey(ip, hourBucket()), ipTokenLimit),
+    checkUser: (userId) => checkBucket(storage, userRateKey(userId, hourBucket()), userLimit),
+    checkIpAuthorize: (ip) => checkBucket(storage, ipAuthRateKey(ip, hourBucket()), ipAuthLimit),
+    checkIpToken: (ip) => checkBucket(storage, ipTokenRateKey(ip, hourBucket()), ipTokenLimit),
   };
 }

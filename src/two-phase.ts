@@ -88,9 +88,7 @@ export function registerMutatingTool(
       // Carry the fields both as text (for clients that only read content) and as
       // structuredContent so they surface unescaped at the result's top level.
       return {
-        content: [
-          { type: "text" as const, text: JSON.stringify(previewPayload) },
-        ],
+        content: [{ type: "text" as const, text: JSON.stringify(previewPayload) }],
         structuredContent: previewPayload,
       };
     },
@@ -126,9 +124,7 @@ export function registerConfirmTool(
       annotations: { destructiveHint: true },
     },
     async (input: unknown): Promise<ToolResult> => {
-      const { confirmationToken, idempotencyKey: rawKey } = input as z.infer<
-        typeof CONFIRM_INPUT
-      >;
+      const { confirmationToken, idempotencyKey: rawKey } = input as z.infer<typeof CONFIRM_INPUT>;
 
       const idemKey = idempotencyKey(ctx.userId, rawKey);
 
@@ -138,8 +134,7 @@ export function registerConfirmTool(
         if (cached === PENDING_SENTINEL) {
           return jsonResult({
             success: false,
-            error:
-              "This request is already being processed — please retry in a moment.",
+            error: "This request is already being processed — please retry in a moment.",
           });
         }
         // Cached result — replay without re-executing.
@@ -186,10 +181,7 @@ export function registerConfirmTool(
 
       // (c)/(d) Execute; on success cache the result and fire the (awaited) mutation hook.
       try {
-        const result = (await tool.mutating.execute(
-          payload.data,
-          ctx,
-        )) as ToolResult;
+        const result = (await tool.mutating.execute(payload.data, ctx)) as ToolResult;
         const resultJson = JSON.stringify(result);
 
         await ctx.storage.put(idemKey, resultJson, {

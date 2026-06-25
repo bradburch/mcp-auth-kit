@@ -217,9 +217,7 @@ describe("logoUrl scheme validation — renderAuthorizePage", () => {
       verify: async () => null,
     };
     const html = renderAuthorizePage(identity, baseParams);
-    expect(html).toContain(
-      '<img class="logo" src="https://example.com/logo.png"',
-    );
+    expect(html).toContain('<img class="logo" src="https://example.com/logo.png"');
   });
 
   it("DOES emit an <img> for a valid http: logoUrl", () => {

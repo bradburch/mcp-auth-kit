@@ -1,11 +1,6 @@
 import type { KvLike } from "../storage/types.js";
 import type { ScopeConfig } from "../config.js";
-import {
-  clientKey,
-  authCodeKey,
-  accessTokenKey,
-  refreshTokenKey,
-} from "../storage/keys.js";
+import { clientKey, authCodeKey, accessTokenKey, refreshTokenKey } from "../storage/keys.js";
 import { sha256Hex } from "../crypto.js";
 
 /** TTL constants in seconds (identical to the brad-paws reference). */
@@ -85,22 +80,14 @@ export interface OAuthProvider {
     codeVerifier: string;
     resource: string;
   }): Promise<TokenPair>;
-  verifyAccessToken(
-    token: string,
-  ): Promise<{ userId: string; scopes: string[] } | null>;
-  refresh(input: {
-    refreshToken: string;
-    clientId: string;
-  }): Promise<TokenPair>;
+  verifyAccessToken(token: string): Promise<{ userId: string; scopes: string[] } | null>;
+  refresh(input: { refreshToken: string; clientId: string }): Promise<TokenPair>;
   revoke(input: { token: string; clientId: string }): Promise<void>;
   normalizeScopes(requested: string[]): string[];
 }
 
 /** Recompute base64url(SHA-256(verifier)) and compare to the stored challenge (PKCE S256 only). */
-async function verifyPkceS256(
-  codeVerifier: string,
-  codeChallenge: string,
-): Promise<boolean> {
+async function verifyPkceS256(codeVerifier: string, codeChallenge: string): Promise<boolean> {
   const data = new TextEncoder().encode(codeVerifier);
   const digest = await crypto.subtle.digest("SHA-256", data);
   const base64url = btoa(String.fromCharCode(...new Uint8Array(digest)))
@@ -110,9 +97,7 @@ async function verifyPkceS256(
   return base64url === codeChallenge;
 }
 
-export function createOAuthProvider(
-  config: OAuthProviderConfig,
-): OAuthProvider {
+export function createOAuthProvider(config: OAuthProviderConfig): OAuthProvider {
   const { storage, scopes, baseUrl } = config;
   const now = config.now ?? (() => Date.now());
 
@@ -266,10 +251,7 @@ export function createOAuthProvider(
       }
 
       // PKCE S256 — recompute and compare.
-      const valid = await verifyPkceS256(
-        input.codeVerifier,
-        codeData.codeChallenge,
-      );
+      const valid = await verifyPkceS256(input.codeVerifier, codeData.codeChallenge);
       if (!valid) {
         throw new Error("PKCE verification failed");
       }
@@ -278,12 +260,7 @@ export function createOAuthProvider(
       await storage.delete(authCodeKey(input.code));
 
       // Always bind to the resource authorized at auth time — no escalation.
-      return issueTokenPair(
-        codeData.userId,
-        codeData.clientId,
-        codeData.resource,
-        codeData.scope,
-      );
+      return issueTokenPair(codeData.userId, codeData.clientId, codeData.resource, codeData.scope);
     },
 
     async verifyAccessToken(token) {
@@ -329,12 +306,8 @@ export function createOAuthProvider(
         storage.get(refreshTokenKey(tokenHash)),
       ]);
 
-      const accessData = accessRaw
-        ? (JSON.parse(accessRaw) as TokenData)
-        : null;
-      const refreshData = refreshRaw
-        ? (JSON.parse(refreshRaw) as TokenData)
-        : null;
+      const accessData = accessRaw ? (JSON.parse(accessRaw) as TokenData) : null;
+      const refreshData = refreshRaw ? (JSON.parse(refreshRaw) as TokenData) : null;
 
       if (accessData && accessData.clientId !== input.clientId) {
         throw new Error("Token was not issued to this client");

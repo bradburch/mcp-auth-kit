@@ -4,10 +4,7 @@ import type { Hono } from "hono";
 /** Compute an S256 PKCE challenge from a fixed verifier (deterministic for tests). */
 export async function pkce() {
   const verifier = "verifier-fixed-string-1234567890-abcdefghij";
-  const digest = await crypto.subtle.digest(
-    "SHA-256",
-    new TextEncoder().encode(verifier),
-  );
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier));
   const challenge = btoa(String.fromCharCode(...new Uint8Array(digest)))
     .replace(/\+/g, "-")
     .replace(/\//g, "_")

@@ -55,9 +55,7 @@ function makeApp() {
 
 /** Extract the confirmationToken from a preview result. */
 function extractToken(preview: unknown): string {
-  const token = /"confirmationToken":"([^"]+)"/.exec(
-    JSON.stringify(preview),
-  )?.[1];
+  const token = /"confirmationToken":"([^"]+)"/.exec(JSON.stringify(preview))?.[1];
   if (!token) throw new Error("No confirmationToken in preview result");
   return token;
 }
@@ -72,7 +70,9 @@ function extractError(result: unknown): string | undefined {
       const parsed = JSON.parse(content);
       return parsed.error as string | undefined;
     }
-  } catch {}
+  } catch {
+    // JSON.parse failed — fall through to regex fallback below
+  }
   // Fallback: scan the raw string for "error" key.
   const m = /"error":"([^"]+)"/.exec(str);
   return m?.[1];

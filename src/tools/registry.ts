@@ -13,12 +13,7 @@
 // Per-tool error sanitization: if a read tool handler throws, we catch it here and return a
 // generic isError result — the raw error message/stack is never forwarded to the client.
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import {
-  isMutating,
-  type ToolDef,
-  type MutatingToolDef,
-  type ToolContext,
-} from "../config.js";
+import { isMutating, type ToolDef, type MutatingToolDef, type ToolContext } from "../config.js";
 import { registerMutatingTool, registerConfirmTool } from "../two-phase.js";
 import { toShape } from "./shape.js";
 
@@ -36,11 +31,7 @@ function isGranted(tool: AnyTool, grantedScopes: string[]): boolean {
  * Fire onToolCall (fire-and-forget — errors are swallowed so a misbehaving
  * hook never fails the tool request).
  */
-async function fireToolCall(
-  ctx: ToolContext,
-  toolName: string,
-  input: unknown,
-): Promise<void> {
+async function fireToolCall(ctx: ToolContext, toolName: string, input: unknown): Promise<void> {
   try {
     await ctx.hooks.onToolCall?.({
       userId: ctx.userId,

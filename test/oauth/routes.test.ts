@@ -23,9 +23,7 @@ function appUnderTest() {
 
 describe("oauth routes", () => {
   it("advertises S256 in discovery metadata", async () => {
-    const res = await appUnderTest().request(
-      "/.well-known/oauth-authorization-server",
-    );
+    const res = await appUnderTest().request("/.well-known/oauth-authorization-server");
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.code_challenge_methods_supported).toEqual(["S256"]);
@@ -105,9 +103,7 @@ describe("oauth routes", () => {
   // ─── RFC 8414 — scopes_supported in AS metadata (R3) ──────────────────────
 
   it("discovery AS metadata includes scopes_supported with configured scope names", async () => {
-    const res = await appUnderTest().request(
-      "/.well-known/oauth-authorization-server",
-    );
+    const res = await appUnderTest().request("/.well-known/oauth-authorization-server");
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.scopes_supported).toEqual(["account:read"]);

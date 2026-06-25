@@ -118,17 +118,12 @@ describe("oauth provider", () => {
     });
     const t2 = await p.refresh({ refreshToken: t1.refreshToken, clientId });
     expect(t2.accessToken).not.toBe(t1.accessToken);
-    await expect(
-      p.refresh({ refreshToken: t1.refreshToken, clientId }),
-    ).rejects.toThrow();
+    await expect(p.refresh({ refreshToken: t1.refreshToken, clientId })).rejects.toThrow();
   });
 
   it("drops unsupported scopes and falls back to defaults", () => {
     const p = provider();
-    expect(p.normalizeScopes(["bogus"])).toEqual([
-      "account:read",
-      "booking:write",
-    ]);
+    expect(p.normalizeScopes(["bogus"])).toEqual(["account:read", "booking:write"]);
     expect(p.normalizeScopes(["account:read"])).toEqual(["account:read"]);
   });
 });

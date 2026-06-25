@@ -13,20 +13,28 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "test": "vitest run",
-    "typecheck": "tsc --noEmit -p tsconfig.json"
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
   },
   "peerDependencies": {
-    "hono": ">=4",
-    "@modelcontextprotocol/sdk": ">=1"
+    "@modelcontextprotocol/sdk": ">=1",
+    "hono": ">=4"
   },
   "dependencies": {
     "zod": "^3"
   },
   "devDependencies": {
-    "typescript": "^5",
-    "vitest": "^2",
-    "hono": "^4",
+    "@eslint/js": "^10.0.1",
     "@modelcontextprotocol/sdk": "^1",
-    "@types/node": "^24"
+    "@types/node": "^24",
+    "eslint": "^10.5.0",
+    "eslint-config-prettier": "^10.1.8",
+    "hono": "^4",
+    "prettier": "^3.8.4",
+    "typescript": "^5",
+    "typescript-eslint": "^8.62.0",
+    "vitest": "^2"
   }
 }

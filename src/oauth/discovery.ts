@@ -15,10 +15,7 @@ export interface DiscoveryDeps {
  * not on a sub-app mounted under a prefix, because RFC 8414 requires
  * /.well-known/oauth-authorization-server at the domain root.
  */
-export function mountDiscovery(
-  app: Hono,
-  { baseUrl, scopes }: DiscoveryDeps,
-): void {
+export function mountDiscovery(app: Hono, { baseUrl, scopes }: DiscoveryDeps): void {
   // RFC 8414 — Authorization Server Metadata
   app.get("/.well-known/oauth-authorization-server", (c) => {
     return c.json({

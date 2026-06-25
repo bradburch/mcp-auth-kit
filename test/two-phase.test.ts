@@ -53,9 +53,7 @@ describe("two-phase confirm", () => {
     const app = makeApp();
     const token = await getToken(app);
     const preview = await callTool(app, token, "book", { slot: "A" });
-    const confirmationToken = /"confirmationToken":"([^"]+)"/.exec(
-      JSON.stringify(preview),
-    )![1];
+    const confirmationToken = /"confirmationToken":"([^"]+)"/.exec(JSON.stringify(preview))![1];
     await callTool(app, token, "confirm_request", {
       confirmationToken,
       idempotencyKey: "idem-1",

@@ -20,10 +20,7 @@ const DEFAULT_SERVER_VERSION = "0.0.0";
 
 /** JSON-RPC error for the GET/DELETE 405 responses (no SSE / sessions in stateless mode). */
 function methodNotAllowed(message: string): Response {
-  return Response.json(
-    jsonRpcError(JSON_RPC_ERROR.METHOD_NOT_ALLOWED, message),
-    { status: 405 },
-  );
+  return Response.json(jsonRpcError(JSON_RPC_ERROR.METHOD_NOT_ALLOWED, message), { status: 405 });
 }
 
 /**
@@ -72,9 +69,7 @@ export function createMcpServer(config: McpServerConfig): Hono {
   );
 
   app.get("/mcp", () => methodNotAllowed("Stateless mode — use POST"));
-  app.delete("/mcp", () =>
-    methodNotAllowed("Stateless mode — no sessions to terminate"),
-  );
+  app.delete("/mcp", () => methodNotAllowed("Stateless mode — no sessions to terminate"));
 
   return app;
 }

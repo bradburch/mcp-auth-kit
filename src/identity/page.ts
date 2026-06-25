@@ -38,19 +38,14 @@ function escapeHtml(s: string): string {
 
 /** Build a `<input type="hidden">` for an OAuth param (value escaped). */
 function hidden(name: string, value: string): string {
-  return `<input type="hidden" name="${escapeHtml(name)}" value="${escapeHtml(
-    value,
-  )}" />`;
+  return `<input type="hidden" name="${escapeHtml(name)}" value="${escapeHtml(value)}" />`;
 }
 
 /**
  * Render the built-in authorize/login form for the given identity config and OAuth params.
  * The returned HTML is a complete document; POSTs back to `/authorize` (same path).
  */
-export function renderAuthorizePage(
-  identity: IdentityConfig,
-  params: AuthorizePageParams,
-): string {
+export function renderAuthorizePage(identity: IdentityConfig, params: AuthorizePageParams): string {
   const branding = identity.branding;
   const appName = escapeHtml(branding?.appName ?? "Sign in");
   const accent = escapeHtml(branding?.accentColor ?? DEFAULT_ACCENT);
@@ -88,13 +83,9 @@ export function renderAuthorizePage(
     })
     .join("\n");
 
-  const errorHtml = params.error
-    ? `<div class="error">${escapeHtml(params.error)}</div>`
-    : "";
+  const errorHtml = params.error ? `<div class="error">${escapeHtml(params.error)}</div>` : "";
 
-  const logoHtml = logoUrlSafe
-    ? `<img class="logo" src="${logoUrlSafe}" alt="${appName}" />`
-    : "";
+  const logoHtml = logoUrlSafe ? `<img class="logo" src="${logoUrlSafe}" alt="${appName}" />` : "";
 
   return `<!DOCTYPE html>
 <html lang="en">

@@ -7,11 +7,7 @@
 ```ts
 interface KvLike {
   get(key: string): Promise<string | null>;
-  put(
-    key: string,
-    value: string,
-    opts?: { ttlSeconds?: number },
-  ): Promise<void>;
+  put(key: string, value: string, opts?: { ttlSeconds?: number }): Promise<void>;
   delete(key: string): Promise<void>;
 }
 ```
@@ -71,10 +67,7 @@ import {
 } from "@aws-sdk/client-dynamodb";
 import type { KvLike } from "mcp-server-kit";
 
-export function createDynamoDbStorage(
-  client: DynamoDBClient,
-  tableName: string,
-): KvLike {
+export function createDynamoDbStorage(client: DynamoDBClient, tableName: string): KvLike {
   return {
     async get(key) {
       const res = await client.send(
