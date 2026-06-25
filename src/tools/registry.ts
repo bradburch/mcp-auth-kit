@@ -10,6 +10,9 @@
 // The Zod inputSchema → SDK shape conversion mirrors brad-paws `mcp-server.ts`: the SDK's
 // deprecated `tool(name, description, shape, annotations, cb)` overload takes the Zod object's
 // `.shape` (a ZodRawShape), not the ZodObject itself.
+//
+// Per-tool error sanitization: if a read tool handler throws, we catch it here and return a
+// generic isError result — the raw error message/stack is never forwarded to the client.
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { z } from "zod";
 import {
@@ -22,6 +25,9 @@ import { registerMutatingTool, registerConfirmTool } from "../two-phase.js";
 
 type AnyTool = ToolDef | MutatingToolDef;
 
+/** Generic client-facing message when a tool handler throws. */
+const TOOL_ERROR_MESSAGE = "Tool execution failed. Please try again.";
+
 /** Extract the SDK-expected ZodRawShape from a tool's Zod object inputSchema. */
 function toShape(schema: z.ZodTypeAny): z.ZodRawShape {
   return (schema as z.ZodObject<z.ZodRawShape>).shape;
@@ -30,6 +36,27 @@ function toShape(schema: z.ZodTypeAny): z.ZodRawShape {
 /** True when a scoped tool is permitted given the caller's granted scopes. */
 function isGranted(tool: AnyTool, grantedScopes: string[]): boolean {
   return tool.scope === undefined || grantedScopes.includes(tool.scope);
+}
+
+/**
+ * Fire onToolCall (fire-and-forget — errors are swallowed so a misbehaving
+ * hook never fails the tool request).
+ */
+async function fireToolCall(
+  ctx: ToolContext,
+  toolName: string,
+  input: unknown,
+): Promise<void> {
+  try {
+    await ctx.hooks.onToolCall?.({
+      userId: ctx.userId,
+      toolName,
+      channel: "mcp",
+      input,
+    });
+  } catch {
+    // Intentionally swallowed — hook errors must not surface to the client.
+  }
 }
 
 /**
@@ -63,7 +90,18 @@ export function registerTools(
       shape,
       annotations,
       async (input: unknown) => {
-        const result = await readTool.handler(input, ctx);
+        let result: unknown;
+        try {
+          result = await readTool.handler(input, ctx);
+        } catch {
+          // Fire hook even on error (best-effort).
+          void fireToolCall(ctx, tool.name, input);
+          return {
+            content: [{ type: "text" as const, text: TOOL_ERROR_MESSAGE }],
+            isError: true,
+          };
+        }
+        void fireToolCall(ctx, tool.name, input);
         return result as { content: Array<{ type: "text"; text: string }> };
       },
     );

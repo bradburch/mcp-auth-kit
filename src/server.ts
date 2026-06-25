@@ -50,6 +50,7 @@ export function createMcpServer(config: McpServerConfig): Hono {
     provider,
     identity: config.identity,
     baseUrl: config.baseUrl,
+    hooks: config.hooks,
   });
 
   const hooks = config.hooks ?? {};

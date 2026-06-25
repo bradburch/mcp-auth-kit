@@ -3,7 +3,7 @@
 // POST /token, POST /revoke onto a Hono app.
 import type { Hono } from "hono";
 import type { OAuthProvider } from "./provider.js";
-import type { IdentityConfig } from "../config.js";
+import type { IdentityConfig, ObservabilityHooks } from "../config.js";
 import {
   renderAuthorizePage,
   type AuthorizePageParams,
@@ -89,6 +89,22 @@ export interface OAuthRouteDeps {
   provider: OAuthProvider;
   identity?: IdentityConfig;
   baseUrl: string;
+  hooks?: ObservabilityHooks;
+}
+
+/**
+ * Fire an onAudit event (fire-and-forget — errors are swallowed so a misbehaving
+ * hook never fails the OAuth request).
+ */
+async function fireAudit(
+  hooks: ObservabilityHooks | undefined,
+  event: Parameters<NonNullable<ObservabilityHooks["onAudit"]>>[0],
+): Promise<void> {
+  try {
+    await hooks?.onAudit?.(event);
+  } catch {
+    // Intentionally swallowed — hook errors must not surface to the client.
+  }
 }
 
 /**
@@ -101,7 +117,7 @@ export interface OAuthRouteDeps {
  */
 export function mountOAuthRoutes(
   app: Hono,
-  { provider, identity, baseUrl }: OAuthRouteDeps,
+  { provider, identity, baseUrl, hooks }: OAuthRouteDeps,
 ): void {
   // ── POST /register ─────────────────────────────────────────────────────────
 
@@ -168,6 +184,10 @@ export function mountOAuthRoutes(
         redirectUris: parsedUris,
         clientName:
           typeof body.client_name === "string" ? body.client_name : undefined,
+      });
+      void fireAudit(hooks, {
+        event: "client_registered",
+        clientId: result.clientId,
       });
       return c.json({ client_id: result.clientId }, 201);
     } catch (e) {
@@ -370,6 +390,7 @@ export function mountOAuthRoutes(
           resource,
         });
 
+        void fireAudit(hooks, { event: "token_issued", clientId });
         return c.json(tokenPairToResponse(tokens));
       } else if (grantType === "refresh_token") {
         const refreshToken = body.refresh_token ?? "";
@@ -382,6 +403,7 @@ export function mountOAuthRoutes(
         }
 
         const tokens = await provider.refresh({ refreshToken, clientId });
+        void fireAudit(hooks, { event: "token_refreshed", clientId });
         return c.json(tokenPairToResponse(tokens));
       } else {
         return c.json(
@@ -424,6 +446,7 @@ export function mountOAuthRoutes(
 
     try {
       await provider.revoke({ token, clientId });
+      void fireAudit(hooks, { event: "token_revoked", clientId });
       // RFC 7009 §2.2: successful revocation always returns 200.
       return c.body(null, 200);
     } catch (e) {

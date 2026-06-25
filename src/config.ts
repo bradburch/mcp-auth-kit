@@ -43,18 +43,28 @@ export interface IdentityConfig {
 
 /** Optional async observability callbacks. */
 export interface ObservabilityHooks {
-  /** Called after every tool invocation with outcome metadata. */
-  onAudit?(event: {
-    userId: string;
-    tool: string;
-    success: boolean;
-    durationMs: number;
-  }): Promise<void>;
-  /** Called before a tool handler runs. */
+  /**
+   * Called after every tool invocation. Fire-and-forget — errors are swallowed
+   * so a throwing hook never fails the request.
+   */
   onToolCall?(event: {
     userId: string;
-    tool: string;
-    input: unknown;
+    toolName: string;
+    channel: "mcp";
+    input?: unknown;
+  }): Promise<void>;
+  /**
+   * Called on OAuth lifecycle events (client_registered, token_issued,
+   * token_refreshed, token_revoked). Fire-and-forget — errors are swallowed.
+   */
+  onAudit?(event: {
+    event:
+      | "client_registered"
+      | "token_issued"
+      | "token_refreshed"
+      | "token_revoked";
+    userId?: string;
+    clientId?: string;
   }): Promise<void>;
   /**
    * Called after a mutating tool's execute phase succeeds. Awaited by the
