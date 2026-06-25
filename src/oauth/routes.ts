@@ -314,6 +314,14 @@ export function mountOAuthRoutes(
       scope,
     } = oauthParams;
 
+    // Mirror GET /authorize: reject a missing code_challenge before doing any
+    // identity work — otherwise a malicious POST could mint an un-redeemable code.
+    if (!clientId || !redirectUri || !codeChallenge) {
+      return c.json(
+        oauthError("invalid_request", "Missing required OAuth parameters"),
+        400,
+      );
+    }
     if (codeChallengeMethod !== "S256") {
       return c.text(
         "Unsupported code_challenge_method. Only S256 is supported.",

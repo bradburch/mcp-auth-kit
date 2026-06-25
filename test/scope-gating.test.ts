@@ -1,0 +1,184 @@
+// test/scope-gating.test.ts — verify that tool scope gating works end-to-end.
+//
+// Strategy: drive the real OAuth flow, requesting a specific scope subset, then
+// confirm that tools gated on an absent scope are not listed while tools gated
+// on a granted scope (or un-gated) appear.
+//
+// We also test the registry unit directly (registerTools) for the case where
+// constructing a narrow-scope token via the HTTP flow would be awkward.
+import { describe, it, expect } from "vitest";
+import { z } from "zod";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { createMcpServer } from "../src/server.js";
+import { createMemoryStorage } from "../src/storage/memory.js";
+import { registerTools } from "../src/tools/registry.js";
+import { getToken } from "./helpers.js";
+import type { ToolContext } from "../src/config.js";
+
+// ─── Unit-level scope gating (registerTools) ─────────────────────────────────
+
+/**
+ * Spin up a McpServer, register tools with registerTools, and ask for the tool
+ * list via JSON-RPC. Returns the list of registered tool names.
+ */
+async function listRegisteredTools(
+  tools: Parameters<typeof registerTools>[1],
+  grantedScopes: string[],
+): Promise<string[]> {
+  const server = new McpServer({ name: "test", version: "0.0.0" });
+  const ctx: ToolContext = {
+    userId: "u1",
+    scopes: grantedScopes,
+    storage: createMemoryStorage(),
+    env: undefined,
+    hooks: {},
+  };
+  registerTools(server, tools, ctx, grantedScopes);
+  // Ask the server's internal registry (the SDK exposes tools as a Map).
+  // Access via the public `listTools` capability if available, otherwise inspect.
+  // We can ask via the transport — but it's simpler to inspect the names that were
+  // registered, since McpServer registers them on a Handler map we can iterate.
+  // Simplest approach: use JSON-RPC over WebStandardStreamableHTTPServerTransport.
+  const { WebStandardStreamableHTTPServerTransport } =
+    await import("@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js");
+  const transport = new WebStandardStreamableHTTPServerTransport({
+    sessionIdGenerator: undefined,
+    enableJsonResponse: true,
+  });
+  await server.connect(transport);
+  const req = new Request("https://test/mcp", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      accept: "application/json, text/event-stream",
+    },
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/list",
+      params: {},
+    }),
+  });
+  const res = await transport.handleRequest(req, {
+    authInfo: { token: "t", clientId: "", scopes: grantedScopes },
+  });
+  await transport.close();
+  await server.close();
+  const body = (await res!.json()) as any;
+  return (body.result?.tools ?? []).map((t: any) => t.name as string);
+}
+
+describe("scope gating (registry unit)", () => {
+  const tools = [
+    {
+      name: "public_tool",
+      description: "no scope required",
+      inputSchema: z.object({}),
+      handler: async () => ({ content: [] }),
+    },
+    {
+      name: "read_tool",
+      description: "requires read scope",
+      scope: "account:read",
+      inputSchema: z.object({}),
+      handler: async () => ({ content: [] }),
+    },
+    {
+      name: "write_tool",
+      description: "requires write scope",
+      scope: "write",
+      inputSchema: z.object({}),
+      handler: async () => ({ content: [] }),
+    },
+  ];
+
+  it("all tools appear when all scopes are granted", async () => {
+    const names = await listRegisteredTools(tools, ["account:read", "write"]);
+    expect(names).toContain("public_tool");
+    expect(names).toContain("read_tool");
+    expect(names).toContain("write_tool");
+  });
+
+  it("scope-gated tool is absent when its scope is not granted", async () => {
+    const names = await listRegisteredTools(tools, ["account:read"]);
+    expect(names).toContain("public_tool");
+    expect(names).toContain("read_tool");
+    expect(names).not.toContain("write_tool"); // "write" not in grantedScopes
+  });
+
+  it("un-scoped tool always appears regardless of granted scopes", async () => {
+    const names = await listRegisteredTools(tools, []); // no scopes at all
+    expect(names).toContain("public_tool");
+    expect(names).not.toContain("read_tool");
+    expect(names).not.toContain("write_tool");
+  });
+});
+
+// ─── Integration: scope-gated mutating tool hidden from non-write token ───────
+
+describe("scope gating (integration via HTTP)", () => {
+  it("mutating tool scoped to 'write' not listed for a 'account:read'-only token", async () => {
+    // The helpers.ts getToken always requests default scopes. Build an app where
+    // 'write' is NOT default, then getToken will only grant 'account:read'.
+    const app = createMcpServer({
+      baseUrl: "https://example.test",
+      storage: createMemoryStorage(),
+      scopes: [
+        { name: "account:read", default: true },
+        { name: "write", default: false }, // not default — won't be granted
+      ],
+      identity: {
+        fields: [{ name: "email", label: "Email" }],
+        verify: async () => "user-1",
+      },
+      tools: [
+        {
+          name: "open_tool",
+          description: "no scope",
+          inputSchema: z.object({}),
+          handler: async () => ({ content: [{ type: "text", text: "ok" }] }),
+        },
+        {
+          name: "write_action",
+          description: "requires write scope",
+          scope: "write",
+          inputSchema: z.object({ x: z.string() }),
+          mutating: {
+            preview: async (input: any) => ({
+              summary: `write ${input.x}`,
+              data: input,
+            }),
+            execute: async () => ({
+              content: [{ type: "text", text: "done" }],
+            }),
+          },
+        },
+      ],
+    });
+
+    // getToken requests no explicit scope → falls back to default scopes → "account:read" only.
+    const token = await getToken(app);
+
+    const res = await app.request("/mcp", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${token}`,
+        "content-type": "application/json",
+        accept: "application/json, text/event-stream",
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/list",
+        params: {},
+      }),
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    const names: string[] = body.result.tools.map((t: any) => t.name);
+    expect(names).toContain("open_tool");
+    expect(names).not.toContain("write_action");
+    // confirm_request also absent (no mutating tools were granted)
+    expect(names).not.toContain("confirm_request");
+  });
+});

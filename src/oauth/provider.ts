@@ -30,7 +30,9 @@ interface ClientData {
   clientId: string;
   redirectUris: string[];
   clientName?: string;
-  scope: string[];
+  // NOTE: no `scope` field. Scope normalization is server-driven (single-tenant
+  // consent model): the server's supported-scope set constrains every grant, not a
+  // per-client allowlist. See issueAuthCode → normalizeScopes.
   createdAt: number;
 }
 
@@ -198,7 +200,6 @@ export function createOAuthProvider(
         clientId,
         redirectUris,
         clientName: input.clientName,
-        scope: [...defaultScopes],
         createdAt,
       };
       await storage.put(clientKey(clientId), JSON.stringify(clientData), {
