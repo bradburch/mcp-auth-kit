@@ -1,6 +1,6 @@
 # Deploying mcp-server-kit
 
-`createMcpServer` returns a [Hono](https://hono.dev/) app. Hono has first-party adapters for every major runtime — wrap the app in the adapter for your target and you're done.
+`createMcpServer` returns a [Hono](https://hono.dev/) app. Mount it at the **origin root** of your deployment so that `/.well-known/*`, `/authorize`, `/token`, and `POST /mcp` all resolve at the top level — RFC 8414 requires the well-known endpoints at the domain root, and spec-compliant MCP clients POST JSON-RPC to `${baseUrl}/mcp`. Hono has first-party adapters for every major runtime — wrap the app in the adapter for your target and you're done.
 
 ## Cloudflare Workers
 

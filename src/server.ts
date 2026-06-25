@@ -5,7 +5,7 @@
 //   - rate limiter (per-user tool calls, per-IP authorize/token)
 //   - discovery endpoints (RFC 8414 / RFC 9728)
 //   - OAuth HTTP routes (/register, /authorize, /token, /revoke)
-//   - MCP transport at POST / (GET/DELETE → 405, stateless mode)
+//   - MCP transport at POST /mcp (GET/DELETE → 405, stateless mode)
 import { Hono } from "hono";
 import type { McpServerConfig } from "./config.js";
 import { createOAuthProvider } from "./oauth/provider.js";
@@ -56,7 +56,7 @@ export function createMcpServer(config: McpServerConfig): Hono {
   const hooks = config.hooks ?? {};
 
   // MCP transport — stateless JSON mode.
-  app.post("/", (c) =>
+  app.post("/mcp", (c) =>
     handleMcpRequest(c.req.raw, {
       provider,
       rateLimiter,
@@ -70,8 +70,8 @@ export function createMcpServer(config: McpServerConfig): Hono {
     }),
   );
 
-  app.get("/", () => methodNotAllowed("Stateless mode — use POST"));
-  app.delete("/", () =>
+  app.get("/mcp", () => methodNotAllowed("Stateless mode — use POST"));
+  app.delete("/mcp", () =>
     methodNotAllowed("Stateless mode — no sessions to terminate"),
   );
 

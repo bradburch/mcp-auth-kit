@@ -31,7 +31,7 @@ describe("createMcpServer read tools", () => {
   it("lists the echo tool for an authenticated caller", async () => {
     const app = makeApp();
     const token = await getToken(app);
-    const res = await app.request("/", {
+    const res = await app.request("/mcp", {
       method: "POST",
       headers: {
         authorization: `Bearer ${token}`,
@@ -52,7 +52,7 @@ describe("createMcpServer read tools", () => {
   });
 
   it("rejects an unauthenticated tool call with 401", async () => {
-    const res = await makeApp().request("/", {
+    const res = await makeApp().request("/mcp", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({

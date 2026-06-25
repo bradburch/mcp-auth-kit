@@ -69,7 +69,7 @@ export async function callTool(
   name: string,
   args: Record<string, unknown>,
 ): Promise<unknown> {
-  const res = await app.request("/", {
+  const res = await app.request("/mcp", {
     method: "POST",
     headers: {
       authorization: `Bearer ${token}`,

@@ -1,6 +1,5 @@
 import { describe, it, expect } from "vitest";
 import { createMemoryStorage } from "../../src/storage/memory.js";
-import { sha256Hex } from "../../src/crypto.js";
 import { createOAuthProvider } from "../../src/oauth/provider.js";
 
 const scopes = [

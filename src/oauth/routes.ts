@@ -117,7 +117,7 @@ async function fireAudit(
  */
 export function mountOAuthRoutes(
   app: Hono,
-  { provider, identity, baseUrl, hooks }: OAuthRouteDeps,
+  { provider, identity, hooks }: OAuthRouteDeps,
 ): void {
   // ── POST /register ─────────────────────────────────────────────────────────
 

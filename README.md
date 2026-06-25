@@ -218,6 +218,8 @@ The kit writes a `"pending"` sentinel before executing, so a concurrent retry th
 
 ## Endpoints mounted by `createMcpServer`
 
+The Hono app returned by `createMcpServer` must be served at the **origin root** (i.e. `https://mcp.example.com/`). RFC 8414 requires `/.well-known/oauth-authorization-server` to resolve at the domain root, and the protected resource is advertised as `${baseUrl}/mcp` — mounting under a path prefix would break discovery and token validation for spec-compliant clients.
+
 | Method   | Path                                      | Description                                             |
 | -------- | ----------------------------------------- | ------------------------------------------------------- |
 | `GET`    | `/.well-known/oauth-authorization-server` | RFC 8414 authorization server metadata                  |
@@ -227,9 +229,9 @@ The kit writes a `"pending"` sentinel before executing, so a concurrent retry th
 | `POST`   | `/authorize`                              | Process login, issue auth code, 302 redirect            |
 | `POST`   | `/token`                                  | Token exchange (`authorization_code` + `refresh_token`) |
 | `POST`   | `/revoke`                                 | Token revocation (RFC 7009)                             |
-| `POST`   | `/`                                       | MCP transport (stateless streamable-HTTP)               |
-| `GET`    | `/`                                       | 405 — stateless mode, no SSE                            |
-| `DELETE` | `/`                                       | 405 — stateless mode, no sessions                       |
+| `POST`   | `/mcp`                                    | MCP transport (stateless streamable-HTTP)               |
+| `GET`    | `/mcp`                                    | 405 — stateless mode, no SSE                            |
+| `DELETE` | `/mcp`                                    | 405 — stateless mode, no sessions                       |
 
 ## Bring your own storage
 
