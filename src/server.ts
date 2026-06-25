@@ -51,6 +51,7 @@ export function createMcpServer(config: McpServerConfig): Hono {
     identity: config.identity,
     baseUrl: config.baseUrl,
     hooks: config.hooks,
+    rateLimiter,
   });
 
   const hooks = config.hooks ?? {};

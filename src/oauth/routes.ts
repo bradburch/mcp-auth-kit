@@ -11,6 +11,9 @@ import {
 
 // Re-export discovery so callers can import everything from one module.
 export { mountDiscovery } from "./discovery.js";
+import type { RateLimiter } from "../rate-limit.js";
+import { extractClientIp } from "../http/client-ip.js";
+import { bodyTooLarge } from "../http/body-limit.js";
 
 // ─── Security header constants ───────────────────────────────────────────────
 
@@ -20,9 +23,9 @@ const TOKEN_CACHE_HEADERS = {
   Pragma: "no-cache",
 } as const;
 
-/** CSP for the authorize form page. */
+/** CSP for the authorize form page. img-src https: allows https logo images. */
 const AUTHORIZE_CSP =
-  "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'";
+  "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; img-src https:";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -90,6 +93,7 @@ export interface OAuthRouteDeps {
   identity?: IdentityConfig;
   baseUrl: string;
   hooks?: ObservabilityHooks;
+  rateLimiter?: RateLimiter;
 }
 
 /**
@@ -117,11 +121,14 @@ async function fireAudit(
  */
 export function mountOAuthRoutes(
   app: Hono,
-  { provider, identity, hooks }: OAuthRouteDeps,
+  { provider, identity, hooks, rateLimiter }: OAuthRouteDeps,
 ): void {
   // ── POST /register ─────────────────────────────────────────────────────────
 
   app.post("/register", async (c) => {
+    const tooBig = bodyTooLarge(c.req.raw);
+    if (tooBig) return tooBig;
+
     let body: Record<string, unknown>;
     try {
       body = await c.req.json();
@@ -255,6 +262,21 @@ export function mountOAuthRoutes(
   app.post("/authorize", async (c) => {
     c.header("Content-Security-Policy", AUTHORIZE_CSP);
 
+    // Per-IP rate limit: brute-force guard on credential submissions.
+    if (rateLimiter) {
+      const ip = extractClientIp(c.req.raw);
+      const allowed = await rateLimiter.checkIpAuthorize(ip);
+      if (!allowed) {
+        return c.json(
+          oauthError("temporarily_unavailable", "rate limit exceeded"),
+          429,
+        );
+      }
+    }
+
+    const authBodyTooBig = bodyTooLarge(c.req.raw);
+    if (authBodyTooBig) return authBodyTooBig;
+
     const formData = await c.req.parseBody();
     const getString = (key: string) => String(formData[key] ?? "").trim();
 
@@ -355,6 +377,21 @@ export function mountOAuthRoutes(
     c.header("Cache-Control", TOKEN_CACHE_HEADERS["Cache-Control"]);
     c.header("Pragma", TOKEN_CACHE_HEADERS["Pragma"]);
 
+    // Per-IP rate limit on the token endpoint.
+    if (rateLimiter) {
+      const ip = extractClientIp(c.req.raw);
+      const allowed = await rateLimiter.checkIpToken(ip);
+      if (!allowed) {
+        return c.json(
+          oauthError("temporarily_unavailable", "rate limit exceeded"),
+          429,
+        );
+      }
+    }
+
+    const tokenBodyTooBig = bodyTooLarge(c.req.raw);
+    if (tokenBodyTooBig) return tokenBodyTooBig;
+
     let body: Record<string, string>;
     try {
       body = await parseBody(c.req.raw);
@@ -436,6 +473,9 @@ export function mountOAuthRoutes(
   // ── POST /revoke ───────────────────────────────────────────────────────────
 
   app.post("/revoke", async (c) => {
+    const revokeBodyTooBig = bodyTooLarge(c.req.raw);
+    if (revokeBodyTooBig) return revokeBodyTooBig;
+
     const body = await parseBody(c.req.raw);
     const token = body.token ?? "";
     const clientId = body.client_id ?? "";

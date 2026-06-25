@@ -1,5 +1,9 @@
 import type { KvLike } from "./types.js";
 
+/**
+ * FOR LOCAL DEV & TESTS ONLY — not persistent and not shared across isolates/instances;
+ * never use in production. Use the Cloudflare KV adapter or another shared KvLike in production.
+ */
 export function createMemoryStorage(
   now: () => number = () => Date.now(),
 ): KvLike {

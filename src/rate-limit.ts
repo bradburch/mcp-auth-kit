@@ -19,7 +19,11 @@ async function checkBucket(
   limit: number,
 ): Promise<boolean> {
   const raw = await storage.get(key);
-  const count = raw === null ? 0 : parseInt(raw, 10);
+  // NOTE: This read-modify-write is best-effort under concurrency — KV has no atomic
+  // increment. Treat missing or non-numeric values as 0 to fail closed (never silently
+  // disable the limit due to NaN >= limit always being false).
+  const n = Number.parseInt(raw ?? "", 10);
+  const count = Number.isFinite(n) ? n : 0;
   if (count >= limit) return false;
   await storage.put(key, String(count + 1), { ttlSeconds: TTL_SECONDS });
   return true;

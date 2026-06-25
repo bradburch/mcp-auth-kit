@@ -19,6 +19,7 @@ import type {
   ObservabilityHooks,
 } from "./config.js";
 import { registerTools } from "./tools/registry.js";
+import { bodyTooLarge, readBodyTooLarge } from "./http/body-limit.js";
 
 /** JSON-RPC error codes used by the transport layer. */
 const JSON_RPC_ERROR = {
@@ -53,8 +54,16 @@ export async function handleMcpRequest(
   req: Request,
   deps: McpRequestDeps,
 ): Promise<Response> {
+  // Reject oversized bodies early (pre-auth DoS guard).
+  const earlyTooLarge = bodyTooLarge(req);
+  if (earlyTooLarge) return earlyTooLarge;
+
   // Read the body immediately — must happen before anything else could consume the stream.
   const requestBody = await req.text();
+
+  // Also check after reading, in case Content-Length was absent.
+  const lateTooLarge = readBodyTooLarge(requestBody);
+  if (lateTooLarge) return lateTooLarge;
 
   // RFC 9728: tell clients where to discover OAuth endpoints on a 401.
   const resourceMetadataUrl = `${deps.baseUrl}/.well-known/oauth-protected-resource`;
@@ -122,6 +131,10 @@ export async function handleMcpRequest(
     body: requestBody,
   });
 
+  // TODO(fix6): verifyAccessToken currently returns { userId, scopes } only.
+  // To thread a real clientId here, update the OAuthProvider interface and the
+  // provider implementation to include clientId in the verifyAccessToken return
+  // shape — the underlying TokenData already stores it.
   const response = await transport.handleRequest(freshRequest, {
     authInfo: {
       token,

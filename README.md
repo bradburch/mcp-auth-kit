@@ -235,7 +235,7 @@ The Hono app returned by `createMcpServer` must be served at the **origin root**
 
 ## Bring your own storage
 
-The default `createMemoryStorage()` is suitable for tests. `createCloudflareKvStorage(kv)` wraps a Cloudflare KV namespace for production. For any other backend, implement `KvLike` (three methods: `get`, `put`, `delete`) and pass it as `storage`.
+The default `createMemoryStorage()` is suitable for tests only — it is not persistent and is not shared across isolates or instances; never use it in production. `createCloudflareKvStorage(kv)` wraps a Cloudflare KV namespace for production. For any other backend, implement `KvLike` (three methods: `get`, `put`, `delete`) and pass it as `storage`.
 
 See [docs/storage-adapters.md](docs/storage-adapters.md) for the interface definition and adapter examples (Redis, DynamoDB, Postgres).
 

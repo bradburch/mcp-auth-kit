@@ -54,7 +54,12 @@ export function renderAuthorizePage(
   const branding = identity.branding;
   const appName = escapeHtml(branding?.appName ?? "Sign in");
   const accent = escapeHtml(branding?.accentColor ?? DEFAULT_ACCENT);
-  const logoUrl = branding?.logoUrl ? escapeHtml(branding.logoUrl) : undefined;
+  // Only emit an <img> for https:// or http:// schemes; reject javascript:, data:, etc.
+  const rawLogoUrl = branding?.logoUrl ?? "";
+  const logoUrlSafe =
+    rawLogoUrl.startsWith("https://") || rawLogoUrl.startsWith("http://")
+      ? escapeHtml(rawLogoUrl)
+      : undefined;
 
   // Hidden inputs carrying the OAuth parameters through the form submission.
   const oauthParams: Record<string, string> = {
@@ -87,8 +92,8 @@ export function renderAuthorizePage(
     ? `<div class="error">${escapeHtml(params.error)}</div>`
     : "";
 
-  const logoHtml = logoUrl
-    ? `<img class="logo" src="${logoUrl}" alt="${appName}" />`
+  const logoHtml = logoUrlSafe
+    ? `<img class="logo" src="${logoUrlSafe}" alt="${appName}" />`
     : "";
 
   return `<!DOCTYPE html>

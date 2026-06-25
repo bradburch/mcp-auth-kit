@@ -4,6 +4,10 @@ A minimal MCP server for booking appointment slots. Demonstrates `list_slots`
 (read tool) and `book_slot` (mutating tool with preview → confirm) using
 in-memory storage and an email + verification-code identity.
 
+> **Note:** This example uses `createMemoryStorage()` for demo simplicity only — it is not
+> persistent and is not shared across isolates. Production deployments must use a shared store
+> (e.g. `createCloudflareKvStorage(kv)`).
+
 ## Run on Node
 
 ```bash
