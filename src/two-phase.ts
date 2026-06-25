@@ -68,11 +68,9 @@ export function registerMutatingTool(
   const shape = toShape(tool.inputSchema);
   const annotations = { destructiveHint: true, ...(tool.annotations ?? {}) };
 
-  server.tool(
+  server.registerTool(
     tool.name,
-    tool.description,
-    shape,
-    annotations,
+    { description: tool.description, inputSchema: shape, annotations },
     async (input: unknown) => {
       const preview = await tool.mutating.preview(input, ctx);
 
@@ -122,12 +120,15 @@ export function registerConfirmTool(
 ): void {
   const byName = new Map(mutatingTools.map((t) => [t.name, t]));
 
-  server.tool(
+  server.registerTool(
     "confirm_request",
-    "Confirm and execute a previously previewed mutating request. " +
-      "Requires the confirmationToken from the preview and a unique idempotencyKey.",
-    CONFIRM_INPUT.shape,
-    { destructiveHint: true },
+    {
+      description:
+        "Confirm and execute a previously previewed mutating request. " +
+        "Requires the confirmationToken from the preview and a unique idempotencyKey.",
+      inputSchema: CONFIRM_INPUT.shape,
+      annotations: { destructiveHint: true },
+    },
     async (input: unknown): Promise<ToolResult> => {
       const { confirmationToken, idempotencyKey: rawKey } = input as z.infer<
         typeof CONFIRM_INPUT

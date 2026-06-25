@@ -7,9 +7,8 @@
 //     mutating tool is granted, ONE shared `confirm_request` tool is registered to execute
 //     them (see two-phase.ts).
 //
-// The Zod inputSchema → SDK shape conversion mirrors brad-paws `mcp-server.ts`: the SDK's
-// deprecated `tool(name, description, shape, annotations, cb)` overload takes the Zod object's
-// `.shape` (a ZodRawShape), not the ZodObject itself.
+// The Zod inputSchema → SDK shape conversion: `registerTool`'s `inputSchema` takes the Zod
+// object's `.shape` (a ZodRawShape), not the ZodObject itself.
 //
 // Per-tool error sanitization: if a read tool handler throws, we catch it here and return a
 // generic isError result — the raw error message/stack is never forwarded to the client.
@@ -84,7 +83,8 @@ export function registerTools(
     const readTool = tool as ToolDef;
     const shape = toShape(tool.inputSchema);
 
-    // Build the per-call handler (identical logic regardless of annotations).
+    // Build the per-call handler. The SDK passes the parsed args object as the first
+    // argument; we forward it to the tool's handler as-is.
     const cb = async (input: unknown) => {
       let result: unknown;
       try {
@@ -101,16 +101,17 @@ export function registerTools(
       return result as { content: Array<{ type: "text"; text: string }> };
     };
 
-    // Only pass annotations when the tool explicitly defines them.
-    // The SDK's tool() overload resolution uses isZodRawShapeCompat() to distinguish
-    // a params shape from a ToolAnnotations object. Both are plain objects, so an
-    // empty {} annotations is indistinguishable from an empty {} shape — the callback
-    // ends up misbound. Omit the argument entirely when annotations is undefined.
-    if (tool.annotations !== undefined) {
-      server.tool(tool.name, tool.description, shape, tool.annotations, cb);
-    } else {
-      server.tool(tool.name, tool.description, shape, cb);
-    }
+    // registerTool uses a config object — no overload ambiguity between an empty
+    // shape ({}) and empty annotations ({}). Pass annotations straightforwardly.
+    server.registerTool(
+      tool.name,
+      {
+        description: tool.description,
+        inputSchema: shape,
+        annotations: tool.annotations,
+      },
+      cb,
+    );
   }
 
   // Register the ONE shared confirm_request tool whenever any mutating tool is present.
