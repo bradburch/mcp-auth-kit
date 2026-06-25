@@ -1,0 +1,480 @@
+// OAuth HTTP route handlers (RFC 6749 / RFC 7009 / RFC 8414).
+// Provides mountOAuthRoutes(app, deps) for wiring POST /register, GET+POST /authorize,
+// POST /token, POST /revoke onto a Hono app.
+import type { Hono } from "hono";
+import type { OAuthProvider } from "./provider.js";
+import type { IdentityConfig } from "../config.js";
+
+// Re-export discovery so callers can import everything from one module.
+export { mountDiscovery } from "./discovery.js";
+
+// ─── Security header constants ───────────────────────────────────────────────
+
+/** RFC 6749 §5.1 — token responses MUST NOT be cached. */
+const TOKEN_CACHE_HEADERS = {
+  "Cache-Control": "no-store",
+  Pragma: "no-cache",
+} as const;
+
+/** CSP for the authorize form page. */
+const AUTHORIZE_CSP =
+  "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'";
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+
+function oauthError(
+  error: string,
+  description?: string,
+): { error: string; error_description?: string } {
+  return description ? { error, error_description: description } : { error };
+}
+
+function hasFragment(uri: string): boolean {
+  try {
+    return new URL(uri).hash !== "";
+  } catch {
+    return false;
+  }
+}
+
+/** Parse application/x-www-form-urlencoded or JSON body into a flat string map. */
+async function parseBody(req: Request): Promise<Record<string, string>> {
+  const ct = req.headers.get("content-type") ?? "";
+  if (ct.includes("application/x-www-form-urlencoded")) {
+    const text = await req.text();
+    const params = new URLSearchParams(text);
+    const result: Record<string, string> = {};
+    for (const [k, v] of params.entries()) {
+      result[k] = v;
+    }
+    return result;
+  }
+  // Fall back to JSON
+  try {
+    return (await req.json()) as Record<string, string>;
+  } catch {
+    return {};
+  }
+}
+
+/** Render a minimal HTML login form (replaced by branded form in Task 9). */
+function renderMinimalForm(opts: {
+  fields: IdentityConfig["fields"];
+  oauthParams: Record<string, string>;
+  error?: string;
+  prefill?: Record<string, string>;
+}): string {
+  const hiddenInputs = Object.entries(opts.oauthParams)
+    .map(
+      ([k, v]) => `<input type="hidden" name="${k}" value="${escapeHtml(v)}">`,
+    )
+    .join("\n");
+
+  const fieldInputs = opts.fields
+    .map((f) => {
+      const val = opts.prefill?.[f.name] ?? "";
+      return `
+        <label for="${f.name}">${escapeHtml(f.label)}</label>
+        <input
+          id="${f.name}"
+          type="${f.type ?? "text"}"
+          name="${f.name}"
+          value="${escapeHtml(val)}"
+          ${f.required !== false ? "required" : ""}
+        >`;
+    })
+    .join("\n");
+
+  const errorHtml = opts.error
+    ? `<p style="color:red">${escapeHtml(opts.error)}</p>`
+    : "";
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Sign in</title></head>
+<body>
+${errorHtml}
+<form method="post">
+${hiddenInputs}
+${fieldInputs}
+<button type="submit">Sign in</button>
+</form>
+</body>
+</html>`;
+}
+
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+// ─── Route mounting ───────────────────────────────────────────────────────────
+
+export interface OAuthRouteDeps {
+  provider: OAuthProvider;
+  identity?: IdentityConfig;
+  baseUrl: string;
+}
+
+/**
+ * Wire OAuth endpoints onto `app`:
+ *   POST /register   — Dynamic Client Registration (RFC 7591)
+ *   GET  /authorize  — Render login form
+ *   POST /authorize  — Process login, issue auth code, 302 redirect
+ *   POST /token      — Token exchange (authorization_code + refresh_token)
+ *   POST /revoke     — Token revocation (RFC 7009)
+ */
+export function mountOAuthRoutes(
+  app: Hono,
+  { provider, identity, baseUrl }: OAuthRouteDeps,
+): void {
+  // ── POST /register ─────────────────────────────────────────────────────────
+
+  app.post("/register", async (c) => {
+    let body: Record<string, unknown>;
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json(
+        oauthError("invalid_client_metadata", "Request body must be JSON"),
+        400,
+      );
+    }
+
+    const redirectUris = body.redirect_uris;
+    if (
+      !redirectUris ||
+      !Array.isArray(redirectUris) ||
+      redirectUris.length === 0
+    ) {
+      return c.json(
+        oauthError("invalid_client_metadata", "redirect_uris required"),
+        400,
+      );
+    }
+
+    if ((redirectUris as string[]).some((u: string) => hasFragment(u))) {
+      return c.json(
+        oauthError(
+          "invalid_client_metadata",
+          "redirect_uris must not contain fragments",
+        ),
+        400,
+      );
+    }
+
+    // Validate URI schemes: https required (http only for localhost dev).
+    let parsedUris: string[];
+    try {
+      parsedUris = (redirectUris as string[]).map((u: string) => {
+        const url = new URL(u);
+        const isLocal =
+          url.hostname === "localhost" || url.hostname === "127.0.0.1";
+        if (
+          url.protocol !== "https:" &&
+          !(url.protocol === "http:" && isLocal)
+        ) {
+          throw new Error(`Invalid redirect URI scheme: ${url.protocol}`);
+        }
+        return url.toString();
+      });
+    } catch (e) {
+      return c.json(
+        oauthError(
+          "invalid_client_metadata",
+          e instanceof Error ? e.message : "Invalid redirect_uris",
+        ),
+        400,
+      );
+    }
+
+    try {
+      const result = await provider.registerClient({
+        redirectUris: parsedUris,
+        clientName:
+          typeof body.client_name === "string" ? body.client_name : undefined,
+      });
+      return c.json({ client_id: result.clientId }, 201);
+    } catch (e) {
+      return c.json(
+        oauthError(
+          "invalid_client_metadata",
+          e instanceof Error ? e.message : "Registration failed",
+        ),
+        400,
+      );
+    }
+  });
+
+  // ── GET /authorize ─────────────────────────────────────────────────────────
+
+  app.get("/authorize", (c) => {
+    c.header("Content-Security-Policy", AUTHORIZE_CSP);
+
+    const responseType = c.req.query("response_type") ?? "";
+    const clientId = c.req.query("client_id") ?? "";
+    const redirectUri = c.req.query("redirect_uri") ?? "";
+    const codeChallenge = c.req.query("code_challenge") ?? "";
+    const codeChallengeMethod = c.req.query("code_challenge_method") ?? "S256";
+    const state = c.req.query("state") ?? "";
+    const resource = c.req.query("resource") ?? "";
+    const scope = c.req.query("scope") ?? "";
+
+    if (!clientId || !redirectUri || !codeChallenge) {
+      return c.text("Missing required OAuth parameters", 400);
+    }
+    if (responseType !== "code") {
+      return c.text(
+        'Unsupported response_type. Only "code" is supported.',
+        400,
+      );
+    }
+    if (codeChallengeMethod !== "S256") {
+      return c.text(
+        "Unsupported code_challenge_method. Only S256 is supported.",
+        400,
+      );
+    }
+
+    const fields = identity?.fields ?? [];
+    const oauthParams: Record<string, string> = {
+      client_id: clientId,
+      redirect_uri: redirectUri,
+      response_type: responseType,
+      code_challenge: codeChallenge,
+      code_challenge_method: codeChallengeMethod,
+      state,
+      resource,
+      scope,
+    };
+
+    return c.html(renderMinimalForm({ fields, oauthParams }));
+  });
+
+  // ── POST /authorize ────────────────────────────────────────────────────────
+
+  app.post("/authorize", async (c) => {
+    c.header("Content-Security-Policy", AUTHORIZE_CSP);
+
+    const formData = await c.req.parseBody();
+    const getString = (key: string) => String(formData[key] ?? "").trim();
+
+    const clientId = getString("client_id");
+    const redirectUri = getString("redirect_uri");
+    const state = getString("state");
+    const codeChallenge = getString("code_challenge");
+    const codeChallengeMethod = getString("code_challenge_method") || "S256";
+    const resource = getString("resource");
+    const scope = getString("scope");
+
+    if (codeChallengeMethod !== "S256") {
+      return c.text(
+        "Unsupported code_challenge_method. Only S256 is supported.",
+        400,
+      );
+    }
+
+    const oauthParams: Record<string, string> = {
+      client_id: clientId,
+      redirect_uri: redirectUri,
+      response_type: "code",
+      code_challenge: codeChallenge,
+      code_challenge_method: codeChallengeMethod,
+      state,
+      resource,
+      scope,
+    };
+
+    // Collect identity field values from form body.
+    const fields = identity?.fields ?? [];
+    const identityFields: Record<string, string> = {};
+    for (const f of fields) {
+      identityFields[f.name] = getString(f.name);
+    }
+
+    function renderError(error: string) {
+      return c.html(
+        renderMinimalForm({
+          fields,
+          oauthParams,
+          error,
+          prefill: identityFields,
+        }),
+        401,
+      );
+    }
+
+    // Verify identity if an identity provider is configured.
+    let userId: string | null = null;
+    if (identity) {
+      userId = await identity.verify(identityFields);
+      if (userId === null) {
+        return renderError("Invalid credentials. Please try again.");
+      }
+    } else {
+      // No identity provider — reject (can't issue code without a userId).
+      return c.json(
+        oauthError("access_denied", "No identity provider configured"),
+        400,
+      );
+    }
+
+    // Issue auth code via provider (validates client + redirectUri internally).
+    try {
+      const normalizedScopes = provider.normalizeScopes(
+        scope ? scope.split(" ") : [],
+      );
+      const { code } = await provider.issueAuthCode({
+        clientId,
+        redirectUri,
+        codeChallenge,
+        scope: normalizedScopes,
+        userId,
+        resource,
+      });
+
+      // 302 redirect back to client with code (and state if provided).
+      const location = new URL(redirectUri);
+      location.searchParams.set("code", code);
+      if (state) location.searchParams.set("state", state);
+
+      return c.redirect(location.toString(), 302);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "Authorization failed";
+      return renderError(msg);
+    }
+  });
+
+  // ── POST /token ────────────────────────────────────────────────────────────
+
+  app.post("/token", async (c) => {
+    // RFC 6749 §5.1: token responses MUST NOT be cached.
+    c.header("Cache-Control", TOKEN_CACHE_HEADERS["Cache-Control"]);
+    c.header("Pragma", TOKEN_CACHE_HEADERS["Pragma"]);
+
+    let body: Record<string, string>;
+    try {
+      body = await parseBody(c.req.raw);
+    } catch {
+      return c.json(
+        oauthError("invalid_request", "Unable to parse request body"),
+        400,
+      );
+    }
+
+    const grantType = body.grant_type ?? "";
+    const clientId = body.client_id ?? "";
+
+    try {
+      if (grantType === "authorization_code") {
+        const code = body.code ?? "";
+        const codeVerifier = body.code_verifier ?? "";
+        const redirectUri = body.redirect_uri ?? "";
+        const resource = body.resource ?? "";
+
+        if (!code || !codeVerifier || !clientId || !redirectUri) {
+          return c.json(
+            oauthError("invalid_request", "Missing required parameters"),
+            400,
+          );
+        }
+
+        const tokens = await provider.exchangeCode({
+          code,
+          clientId,
+          redirectUri,
+          codeVerifier,
+          resource,
+        });
+
+        return c.json(tokenPairToResponse(tokens));
+      } else if (grantType === "refresh_token") {
+        const refreshToken = body.refresh_token ?? "";
+
+        if (!refreshToken || !clientId) {
+          return c.json(
+            oauthError("invalid_request", "Missing required parameters"),
+            400,
+          );
+        }
+
+        const tokens = await provider.refresh({ refreshToken, clientId });
+        return c.json(tokenPairToResponse(tokens));
+      } else {
+        return c.json(
+          oauthError(
+            "unsupported_grant_type",
+            `grant_type "${grantType}" is not supported`,
+          ),
+          400,
+        );
+      }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "Token exchange failed";
+      // Map error messages to OAuth error codes + HTTP status.
+      if (msg.includes("Invalid or expired") || msg.includes("PKCE")) {
+        return c.json(oauthError("invalid_grant", msg), 400);
+      }
+      if (
+        msg.includes("invalid_client") ||
+        msg.includes("Client ID mismatch")
+      ) {
+        return c.json(oauthError("invalid_client", msg), 401);
+      }
+      if (msg.includes("Resource mismatch")) {
+        return c.json(oauthError("invalid_target", msg), 400);
+      }
+      return c.json(oauthError("invalid_grant", msg), 400);
+    }
+  });
+
+  // ── POST /revoke ───────────────────────────────────────────────────────────
+
+  app.post("/revoke", async (c) => {
+    const body = await parseBody(c.req.raw);
+    const token = body.token ?? "";
+    const clientId = body.client_id ?? "";
+
+    if (!token) {
+      return c.json(oauthError("invalid_request", "token is required"), 400);
+    }
+
+    try {
+      await provider.revoke({ token, clientId });
+      // RFC 7009 §2.2: successful revocation always returns 200.
+      return c.body(null, 200);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "";
+      // RFC 7009 §2.2.1: token belonging to a different client → 401.
+      if (msg.includes("Token was not issued to this client")) {
+        return c.json(
+          oauthError(
+            "unauthorized_client",
+            "Token was issued to a different client",
+          ),
+          401,
+        );
+      }
+      // RFC 7009 §2.2: all other errors (unknown token, etc.) → 200.
+      return c.body(null, 200);
+    }
+  });
+}
+
+// ─── Internal helpers ─────────────────────────────────────────────────────────
+
+import type { TokenPair } from "./provider.js";
+
+/** Map the internal TokenPair to the standard OAuth JSON response shape. */
+function tokenPairToResponse(tokens: TokenPair) {
+  return {
+    access_token: tokens.accessToken,
+    refresh_token: tokens.refreshToken,
+    token_type: "Bearer" as const,
+    expires_in: tokens.expiresIn,
+    scope: tokens.scope.join(" "),
+  };
+}
