@@ -9,8 +9,6 @@ import {
   type AuthorizePageParams,
 } from "../identity/page.js";
 
-// Re-export discovery so callers can import everything from one module.
-export { mountDiscovery } from "./discovery.js";
 import type { RateLimiter } from "../rate-limit.js";
 import { extractClientIp } from "../http/client-ip.js";
 import { bodyTooLarge } from "../http/body-limit.js";
@@ -86,6 +84,25 @@ function authorizePageParams(
   };
 }
 
+/**
+ * Extract the 8 standard OAuth params from a flat string map (query string or form body).
+ * Shared by GET /authorize (query params) and POST /authorize (form body).
+ */
+function extractOAuthParams(
+  source: Record<string, string>,
+): Record<string, string> {
+  return {
+    response_type: source.response_type ?? "",
+    client_id: source.client_id ?? "",
+    redirect_uri: source.redirect_uri ?? "",
+    code_challenge: source.code_challenge ?? "",
+    code_challenge_method: source.code_challenge_method || "S256",
+    state: source.state ?? "",
+    resource: source.resource ?? "",
+    scope: source.scope ?? "",
+  };
+}
+
 // ─── Route mounting ───────────────────────────────────────────────────────────
 
 export interface OAuthRouteDeps {
@@ -154,7 +171,7 @@ export function mountOAuthRoutes(
     if ((redirectUris as string[]).some((u: string) => hasFragment(u))) {
       return c.json(
         oauthError(
-          "invalid_client_metadata",
+          "invalid_redirect_uri",
           "redirect_uris must not contain fragments",
         ),
         400,
@@ -179,7 +196,7 @@ export function mountOAuthRoutes(
     } catch (e) {
       return c.json(
         oauthError(
-          "invalid_client_metadata",
+          "invalid_redirect_uri",
           e instanceof Error ? e.message : "Invalid redirect_uris",
         ),
         400,
@@ -196,7 +213,17 @@ export function mountOAuthRoutes(
         event: "client_registered",
         clientId: result.clientId,
       });
-      return c.json({ client_id: result.clientId }, 201);
+      // RFC 7591 §3.2.1: echo client_id, redirect_uris, client_id_issued_at,
+      // and token_endpoint_auth_method in the registration response.
+      return c.json(
+        {
+          client_id: result.clientId,
+          client_id_issued_at: Math.floor(result.createdAt / 1000),
+          redirect_uris: result.redirectUris,
+          token_endpoint_auth_method: "none",
+        },
+        201,
+      );
     } catch (e) {
       return c.json(
         oauthError(
@@ -213,14 +240,19 @@ export function mountOAuthRoutes(
   app.get("/authorize", (c) => {
     c.header("Content-Security-Policy", AUTHORIZE_CSP);
 
-    const responseType = c.req.query("response_type") ?? "";
-    const clientId = c.req.query("client_id") ?? "";
-    const redirectUri = c.req.query("redirect_uri") ?? "";
-    const codeChallenge = c.req.query("code_challenge") ?? "";
-    const codeChallengeMethod = c.req.query("code_challenge_method") ?? "S256";
-    const state = c.req.query("state") ?? "";
-    const resource = c.req.query("resource") ?? "";
-    const scope = c.req.query("scope") ?? "";
+    const oauthParams = extractOAuthParams(
+      Object.fromEntries(new URL(c.req.url).searchParams.entries()) as Record<
+        string,
+        string
+      >,
+    );
+    const {
+      client_id: clientId,
+      redirect_uri: redirectUri,
+      code_challenge: codeChallenge,
+      response_type: responseType,
+      code_challenge_method: codeChallengeMethod,
+    } = oauthParams;
 
     if (!clientId || !redirectUri || !codeChallenge) {
       return c.text("Missing required OAuth parameters", 400);
@@ -237,17 +269,6 @@ export function mountOAuthRoutes(
         400,
       );
     }
-
-    const oauthParams: Record<string, string> = {
-      client_id: clientId,
-      redirect_uri: redirectUri,
-      response_type: responseType,
-      code_challenge: codeChallenge,
-      code_challenge_method: codeChallengeMethod,
-      state,
-      resource,
-      scope,
-    };
 
     if (!identity) {
       return c.text("No identity provider configured", 400);
@@ -280,13 +301,18 @@ export function mountOAuthRoutes(
     const formData = await c.req.parseBody();
     const getString = (key: string) => String(formData[key] ?? "").trim();
 
-    const clientId = getString("client_id");
-    const redirectUri = getString("redirect_uri");
-    const state = getString("state");
-    const codeChallenge = getString("code_challenge");
-    const codeChallengeMethod = getString("code_challenge_method") || "S256";
-    const resource = getString("resource");
-    const scope = getString("scope");
+    const oauthParams = extractOAuthParams(
+      Object.fromEntries(Object.keys(formData).map((k) => [k, getString(k)])),
+    );
+    const {
+      client_id: clientId,
+      redirect_uri: redirectUri,
+      state,
+      code_challenge: codeChallenge,
+      code_challenge_method: codeChallengeMethod,
+      resource,
+      scope,
+    } = oauthParams;
 
     if (codeChallengeMethod !== "S256") {
       return c.text(
@@ -294,17 +320,6 @@ export function mountOAuthRoutes(
         400,
       );
     }
-
-    const oauthParams: Record<string, string> = {
-      client_id: clientId,
-      redirect_uri: redirectUri,
-      response_type: "code",
-      code_challenge: codeChallenge,
-      code_challenge_method: codeChallengeMethod,
-      state,
-      resource,
-      scope,
-    };
 
     // Collect identity field values from form body.
     const fields = identity?.fields ?? [];

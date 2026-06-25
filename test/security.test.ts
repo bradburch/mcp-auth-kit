@@ -1,12 +1,12 @@
 // test/security.test.ts — focused tests for security fixes
 import { describe, it, expect } from "vitest";
 import { Hono } from "hono";
-import { z } from "zod";
 import { createMcpServer } from "../src/server.js";
 import { createMemoryStorage } from "../src/storage/memory.js";
 import { createOAuthProvider } from "../src/oauth/provider.js";
 import { createRateLimiter } from "../src/rate-limit.js";
-import { mountOAuthRoutes, mountDiscovery } from "../src/oauth/routes.js";
+import { mountOAuthRoutes } from "../src/oauth/routes.js";
+import { mountDiscovery } from "../src/oauth/discovery.js";
 import { renderAuthorizePage } from "../src/identity/page.js";
 import { getToken } from "./helpers.js";
 import type { IdentityConfig } from "../src/config.js";

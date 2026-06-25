@@ -22,14 +22,15 @@ import { registerTools } from "./tools/registry.js";
 import { bodyTooLarge, readBodyTooLarge } from "./http/body-limit.js";
 
 /** JSON-RPC error codes used by the transport layer. */
-const JSON_RPC_ERROR = {
+export const JSON_RPC_ERROR = {
+  METHOD_NOT_ALLOWED: -32000,
   AUTH_REQUIRED: -32001,
   RATE_LIMITED: -32002,
   INTERNAL: -32603,
 } as const;
 
 /** Build a JSON-RPC error envelope (id: null — no request id at the transport boundary). */
-function jsonRpcError(code: number, message: string) {
+export function jsonRpcError(code: number, message: string) {
   return { jsonrpc: "2.0" as const, id: null, error: { code, message } };
 }
 

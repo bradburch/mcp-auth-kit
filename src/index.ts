@@ -1,5 +1,7 @@
 // Public API surface for mcp-server-kit.
-export const version = "0.0.0";
+
+// ─── Primary API ─────────────────────────────────────────────────────────────
+// Use these for building a standard MCP server with OAuth out of the box.
 
 export { createMcpServer } from "./server.js";
 
@@ -30,3 +32,26 @@ export type {
   MutatingToolDef,
   RateLimitConfig,
 } from "./config.js";
+
+// ─── Advanced / low-level API ─────────────────────────────────────────────────
+// For adopters who need to compose their own Hono app (custom middleware,
+// sub-path mounting, etc.) rather than using createMcpServer directly.
+
+export { createOAuthProvider } from "./oauth/provider.js";
+export type {
+  OAuthProvider,
+  OAuthProviderConfig,
+  TokenPair,
+} from "./oauth/provider.js";
+
+export { mountOAuthRoutes } from "./oauth/routes.js";
+export type { OAuthRouteDeps } from "./oauth/routes.js";
+
+export { mountDiscovery } from "./oauth/discovery.js";
+export type { DiscoveryDeps } from "./oauth/discovery.js";
+
+export { createRateLimiter } from "./rate-limit.js";
+export type { RateLimiter } from "./rate-limit.js";
+
+export { handleMcpRequest } from "./transport.js";
+export type { McpRequestDeps } from "./transport.js";

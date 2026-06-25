@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { createMemoryStorage } from "../../src/storage/memory.js";
 import { createOAuthProvider } from "../../src/oauth/provider.js";
+import { pkce } from "../helpers.js";
 
 const scopes = [
   { name: "account:read", default: true },
@@ -8,19 +9,6 @@ const scopes = [
 ];
 const baseUrl = "https://example.test";
 const resource = `${baseUrl}/mcp`;
-
-async function pkce() {
-  const verifier = "verifier-fixed-string-1234567890-abcdefghij";
-  const digest = await crypto.subtle.digest(
-    "SHA-256",
-    new TextEncoder().encode(verifier),
-  );
-  const challenge = btoa(String.fromCharCode(...new Uint8Array(digest)))
-    .replace(/\+/g, "-")
-    .replace(/\//g, "_")
-    .replace(/=+$/, "");
-  return { verifier, challenge };
-}
 
 function provider() {
   return createOAuthProvider({

@@ -13,7 +13,6 @@
 // Per-tool error sanitization: if a read tool handler throws, we catch it here and return a
 // generic isError result — the raw error message/stack is never forwarded to the client.
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import type { z } from "zod";
 import {
   isMutating,
   type ToolDef,
@@ -21,16 +20,12 @@ import {
   type ToolContext,
 } from "../config.js";
 import { registerMutatingTool, registerConfirmTool } from "../two-phase.js";
+import { toShape } from "./shape.js";
 
 type AnyTool = ToolDef | MutatingToolDef;
 
 /** Generic client-facing message when a tool handler throws. */
 const TOOL_ERROR_MESSAGE = "Tool execution failed. Please try again.";
-
-/** Extract the SDK-expected ZodRawShape from a tool's Zod object inputSchema. */
-function toShape(schema: z.ZodTypeAny): z.ZodRawShape {
-  return (schema as z.ZodObject<z.ZodRawShape>).shape;
-}
 
 /** True when a scoped tool is permitted given the caller's granted scopes. */
 function isGranted(tool: AnyTool, grantedScopes: string[]): boolean {

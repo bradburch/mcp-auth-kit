@@ -6,6 +6,7 @@ const DEFAULT_USER_PER_HOUR = 50;
 const DEFAULT_IP_AUTHORIZE_PER_HOUR = 10;
 const DEFAULT_IP_TOKEN_PER_HOUR = 30;
 const TTL_SECONDS = 3600;
+const MS_PER_HOUR = 3_600_000;
 
 export interface RateLimiter {
   checkUser(userId: string): Promise<boolean>;
@@ -43,7 +44,7 @@ export function createRateLimiter({
     config.ipAuthorizePerHour ?? DEFAULT_IP_AUTHORIZE_PER_HOUR;
   const ipTokenLimit = config.ipTokenPerHour ?? DEFAULT_IP_TOKEN_PER_HOUR;
 
-  const hourBucket = () => Math.floor(now() / 3_600_000);
+  const hourBucket = () => Math.floor(now() / MS_PER_HOUR);
 
   return {
     checkUser: (userId) =>

@@ -67,7 +67,7 @@ export interface OAuthProvider {
   registerClient(input: {
     redirectUris: string[];
     clientName?: string;
-  }): Promise<{ clientId: string }>;
+  }): Promise<{ clientId: string; redirectUris: string[]; createdAt: number }>;
   issueAuthCode(input: {
     clientId: string;
     redirectUri: string;
@@ -192,17 +192,19 @@ export function createOAuthProvider(
 
     async registerClient(input) {
       const clientId = crypto.randomUUID();
+      const createdAt = now();
+      const redirectUris = input.redirectUris.map((u) => u.toString());
       const clientData: ClientData = {
         clientId,
-        redirectUris: input.redirectUris.map((u) => u.toString()),
+        redirectUris,
         clientName: input.clientName,
         scope: [...defaultScopes],
-        createdAt: now(),
+        createdAt,
       };
       await storage.put(clientKey(clientId), JSON.stringify(clientData), {
         ttlSeconds: TTL.CLIENT,
       });
-      return { clientId };
+      return { clientId, redirectUris, createdAt };
     },
 
     async issueAuthCode(input) {

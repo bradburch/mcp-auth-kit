@@ -3,7 +3,8 @@ import { describe, it, expect } from "vitest";
 import { Hono } from "hono";
 import { createMemoryStorage } from "../../src/storage/memory.js";
 import { createOAuthProvider } from "../../src/oauth/provider.js";
-import { mountOAuthRoutes, mountDiscovery } from "../../src/oauth/routes.js";
+import { mountOAuthRoutes } from "../../src/oauth/routes.js";
+import { mountDiscovery } from "../../src/oauth/discovery.js";
 
 const scopes = [{ name: "account:read", default: true }];
 const baseUrl = "https://example.test";
@@ -50,5 +51,65 @@ describe("oauth routes", () => {
       body: "grant_type=authorization_code",
     });
     expect(res.headers.get("cache-control")).toContain("no-store");
+  });
+
+  // ─── RFC 7591 — DCR response shape (R1) ────────────────────────────────────
+
+  it("DCR 201 response includes client_id_issued_at, redirect_uris, token_endpoint_auth_method", async () => {
+    const redirectUris = ["https://app/cb", "https://app/cb2"];
+    const before = Math.floor(Date.now() / 1000);
+    const res = await appUnderTest().request("/register", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ redirect_uris: redirectUris }),
+    });
+    const after = Math.floor(Date.now() / 1000);
+    expect(res.status).toBe(201);
+    const body = await res.json();
+    expect(typeof body.client_id).toBe("string");
+    expect(body.redirect_uris).toEqual(redirectUris);
+    expect(body.token_endpoint_auth_method).toBe("none");
+    expect(typeof body.client_id_issued_at).toBe("number");
+    expect(body.client_id_issued_at).toBeGreaterThanOrEqual(before);
+    expect(body.client_id_issued_at).toBeLessThanOrEqual(after);
+  });
+
+  // ─── RFC 7591 — redirect-uri validation error codes (R2) ───────────────────
+
+  it("returns invalid_redirect_uri when a redirect URI contains a fragment", async () => {
+    const res = await appUnderTest().request("/register", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        redirect_uris: ["https://app/cb#fragment"],
+      }),
+    });
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toBe("invalid_redirect_uri");
+  });
+
+  it("returns invalid_redirect_uri for a bad scheme (ftp:)", async () => {
+    const res = await appUnderTest().request("/register", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        redirect_uris: ["ftp://app/cb"],
+      }),
+    });
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toBe("invalid_redirect_uri");
+  });
+
+  // ─── RFC 8414 — scopes_supported in AS metadata (R3) ──────────────────────
+
+  it("discovery AS metadata includes scopes_supported with configured scope names", async () => {
+    const res = await appUnderTest().request(
+      "/.well-known/oauth-authorization-server",
+    );
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.scopes_supported).toEqual(["account:read"]);
   });
 });

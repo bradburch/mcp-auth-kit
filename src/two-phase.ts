@@ -18,6 +18,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { MutatingToolDef, ToolContext } from "./config.js";
 import { confirmKey, idempotencyKey } from "./storage/keys.js";
+import { toShape } from "./tools/shape.js";
 
 /** Confirmation-token TTL — a previewed mutation expires after 5 minutes. */
 const CONFIRM_TTL_SECONDS = 300;
@@ -47,11 +48,6 @@ function jsonResult(value: unknown, isError = false): ToolResult {
     content: [{ type: "text", text: JSON.stringify(value) }],
     isError,
   };
-}
-
-/** Extract the SDK-expected ZodRawShape from a tool's Zod object inputSchema. */
-function toShape(schema: z.ZodTypeAny): z.ZodRawShape {
-  return (schema as z.ZodObject<z.ZodRawShape>).shape;
 }
 
 /**

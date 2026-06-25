@@ -12,7 +12,7 @@ import { createOAuthProvider } from "./oauth/provider.js";
 import { mountOAuthRoutes } from "./oauth/routes.js";
 import { mountDiscovery } from "./oauth/discovery.js";
 import { createRateLimiter } from "./rate-limit.js";
-import { handleMcpRequest } from "./transport.js";
+import { handleMcpRequest, jsonRpcError, JSON_RPC_ERROR } from "./transport.js";
 
 /** Default server identity reported to MCP clients (adopter can't yet override). */
 const DEFAULT_SERVER_NAME = "mcp-server-kit";
@@ -21,7 +21,7 @@ const DEFAULT_SERVER_VERSION = "0.0.0";
 /** JSON-RPC error for the GET/DELETE 405 responses (no SSE / sessions in stateless mode). */
 function methodNotAllowed(message: string): Response {
   return Response.json(
-    { jsonrpc: "2.0", id: null, error: { code: -32000, message } },
+    jsonRpcError(JSON_RPC_ERROR.METHOD_NOT_ALLOWED, message),
     { status: 405 },
   );
 }
