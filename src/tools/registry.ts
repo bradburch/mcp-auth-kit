@@ -83,28 +83,34 @@ export function registerTools(
 
     const readTool = tool as ToolDef;
     const shape = toShape(tool.inputSchema);
-    const annotations = tool.annotations ?? {};
-    server.tool(
-      tool.name,
-      tool.description,
-      shape,
-      annotations,
-      async (input: unknown) => {
-        let result: unknown;
-        try {
-          result = await readTool.handler(input, ctx);
-        } catch {
-          // Fire hook even on error (best-effort).
-          void fireToolCall(ctx, tool.name, input);
-          return {
-            content: [{ type: "text" as const, text: TOOL_ERROR_MESSAGE }],
-            isError: true,
-          };
-        }
+
+    // Build the per-call handler (identical logic regardless of annotations).
+    const cb = async (input: unknown) => {
+      let result: unknown;
+      try {
+        result = await readTool.handler(input, ctx);
+      } catch {
+        // Fire hook even on error (best-effort).
         void fireToolCall(ctx, tool.name, input);
-        return result as { content: Array<{ type: "text"; text: string }> };
-      },
-    );
+        return {
+          content: [{ type: "text" as const, text: TOOL_ERROR_MESSAGE }],
+          isError: true,
+        };
+      }
+      void fireToolCall(ctx, tool.name, input);
+      return result as { content: Array<{ type: "text"; text: string }> };
+    };
+
+    // Only pass annotations when the tool explicitly defines them.
+    // The SDK's tool() overload resolution uses isZodRawShapeCompat() to distinguish
+    // a params shape from a ToolAnnotations object. Both are plain objects, so an
+    // empty {} annotations is indistinguishable from an empty {} shape — the callback
+    // ends up misbound. Omit the argument entirely when annotations is undefined.
+    if (tool.annotations !== undefined) {
+      server.tool(tool.name, tool.description, shape, tool.annotations, cb);
+    } else {
+      server.tool(tool.name, tool.description, shape, cb);
+    }
   }
 
   // Register the ONE shared confirm_request tool whenever any mutating tool is present.
