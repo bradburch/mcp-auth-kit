@@ -108,12 +108,17 @@ export function isMutating(t: ToolDef | MutatingToolDef): t is MutatingToolDef {
   return "mutating" in t;
 }
 
-/** Per-scope or global rate-limit configuration. */
+/**
+ * Rate-limit thresholds for the three KV buckets.
+ * All limits are per-hour. Omit a field to use the default.
+ */
 export interface RateLimitConfig {
-  /** Maximum requests per window per user. */
-  maxRequests: number;
-  /** Window length in seconds. */
-  windowSeconds: number;
+  /** Max MCP tool calls per user per hour. Default: 50. */
+  userPerHour?: number;
+  /** Max OAuth authorize attempts per IP per hour (brute-force guard). Default: 10. */
+  ipAuthorizePerHour?: number;
+  /** Max token-endpoint requests per IP per hour. Default: 30. */
+  ipTokenPerHour?: number;
 }
 
 /** Top-level configuration passed to the MCP server factory. */
