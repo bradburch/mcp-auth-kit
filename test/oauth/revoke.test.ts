@@ -2,7 +2,7 @@
 import { describe, it, expect } from "vitest";
 import { createMcpServer } from "../../src/server.js";
 import { createMemoryStorage } from "../../src/storage/memory.js";
-import { getToken, pkce } from "../helpers.js";
+import { pkce } from "../helpers.js";
 import { z } from "zod";
 
 function makeApp() {

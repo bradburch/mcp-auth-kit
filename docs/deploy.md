@@ -2,6 +2,10 @@
 
 `createMcpServer` returns a [Hono](https://hono.dev/) app. Mount it at the **origin root** of your deployment so that `/.well-known/*`, `/authorize`, `/token`, and `POST /mcp` all resolve at the top level — RFC 8414 requires the well-known endpoints at the domain root, and spec-compliant MCP clients POST JSON-RPC to `${baseUrl}/mcp`. Hono has first-party adapters for every major runtime — wrap the app in the adapter for your target and you're done.
 
+## Request body limit
+
+All request bodies — OAuth endpoints and the MCP transport — are capped at **1 MB**. Requests that exceed this limit receive HTTP 413. If your tools accept large inputs (e.g. document contents), pre-process or chunk them before sending.
+
 ## Cloudflare Workers
 
 Use `createCloudflareKvStorage` to wrap your KV namespace binding.
@@ -18,6 +22,7 @@ interface Env {
 const app = createMcpServer({
   baseUrl: "https://mcp.example.com",
   storage: createCloudflareKvStorage(
+    // KV bindings are available on globalThis when the module initializes in Cloudflare Workers.
     (globalThis as unknown as { KV: KVNamespace }).KV,
   ),
   scopes: [{ name: "account:read", default: true }],

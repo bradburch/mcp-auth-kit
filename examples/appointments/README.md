@@ -8,17 +8,26 @@ in-memory storage and an email + verification-code identity.
 > persistent and is not shared across isolates. Production deployments must use a shared store
 > (e.g. `createCloudflareKvStorage(kv)`).
 
+> **Mount at root:** This server must be bound to your domain root (not a sub-path) — RFC 8414
+> requires `/.well-known/oauth-authorization-server` to resolve at the domain root. See the
+> [deploy guide](../../docs/deploy.md) for details.
+
 ## Run on Node
 
+`@hono/node-server` and a TypeScript runner (`tsx` or `ts-node`) are dev extras — not bundled
+with `mcp-server-kit`. Install them first:
+
 ```bash
-npm install @hono/node-server hono
-node -e "
-import { serve } from '@hono/node-server';
-import { createAppointmentsServer } from './server.js';
-serve({ fetch: createAppointmentsServer().fetch, port: 3000 });
-console.log('Listening on http://localhost:3000');
-"
+npm install --save-dev @hono/node-server tsx
 ```
+
+Then run the included entry point:
+
+```bash
+npx tsx examples/appointments/run.ts
+```
+
+This starts the server on port 3000 (override with `PORT=<n>`).
 
 ## Discovery endpoint
 

@@ -134,6 +134,8 @@ All limits are per-hour. Omit a field to use the default.
 | `ipAuthorizePerHour` | `number?` | 10      | Max OAuth authorize attempts per IP per hour (brute-force guard). |
 | `ipTokenPerHour`     | `number?` | 30      | Max token-endpoint requests per IP per hour.                      |
 
+Rate-limit counters use a non-atomic read-modify-write (KV has no atomic increment) — counts may under-count under high concurrency. For strict enforcement, wrap `createRateLimiter` with a Durable Object counter or equivalent. The per-IP source is `CF-Connecting-IP` (Cloudflare) falling back to the first hop of `X-Forwarded-For`; adopt a different trusted header for non-Cloudflare deployments.
+
 ### `ObservabilityHooks`
 
 All callbacks are fire-and-forget except `onMutation` (which is awaited). Errors are swallowed so a throwing hook never fails the request.
@@ -145,6 +147,8 @@ All callbacks are fire-and-forget except `onMutation` (which is awaited). Errors
 | `onMutation` | `(event) => Promise<void>` | Called (awaited) after a mutating tool's execute phase succeeds.                                            |
 
 ## Tool definitions
+
+Each tool in the `tools` array is either a `ToolDef` (has a `handler` — called directly) or a `MutatingToolDef` (has a `mutating.preview` and `mutating.execute` — uses the two-phase confirm flow). The two shapes are mutually exclusive.
 
 ### Standard tool (`ToolDef`)
 
@@ -172,12 +176,24 @@ interface ToolContext {
 }
 ```
 
+### Scope gating
+
+If a tool specifies `scope`, the kit checks the caller's token at dispatch time. A caller whose token lacks the required scope receives an error without the handler running — the tool is also hidden from the `tools/list` response for that caller. Scopes flagged `default: true` in the server config are automatically granted when the client requests no explicit scopes. `ctx.scopes` inside a handler reflects the token's full granted scope list.
+
 ### Mutating tool (`MutatingToolDef`) — two-phase preview → confirm
 
 Mutating tools never execute their side effect on the first call. The flow is:
 
 1. **Preview phase** — the MCP client calls the tool. `mutating.preview(input, ctx)` runs, returns a `{ summary, data }` preview. The kit stores it under a single-use confirmation token (5-minute TTL) and returns the token to the client.
 2. **Confirm phase** — the MCP client calls the built-in `confirm_request` tool with the `confirmationToken` from step 1 and a unique `idempotencyKey`. `mutating.execute(data, ctx)` runs, and the result is returned (and cached for 10 minutes under the idempotency key).
+
+> **Idempotency — best-effort, not exactly-once:** The kit writes a `"pending"` sentinel before
+> executing, so a concurrent retry that sees it backs off and asks the caller to retry. A retry
+> that sees a cached result replays it without re-executing. **Limitation:** The underlying KV
+> store has no compare-and-swap. The pending sentinel narrows — but does not fully close — the
+> double-execute window. True exactly-once delivery requires a strongly consistent store (a
+> Durable Object or equivalent). On execute failure the sentinel is deleted so a legitimate retry
+> can re-run.
 
 ```ts
 {
@@ -201,20 +217,14 @@ Mutating tools never execute their side effect on the first call. The flow is:
 
 #### `confirm_request` tool
 
-The kit registers one shared `confirm_request` tool automatically. Its input:
+The kit registers one shared `confirm_request` tool automatically. Its input schema:
 
 ```ts
-{
-  confirmationToken: string; // from the preview response
-  idempotencyKey: string; // caller-generated, unique per logical operation
-}
+z.object({
+  confirmationToken: z.string(), // from the preview response
+  idempotencyKey: z.string(), // caller-generated, unique per logical operation
+});
 ```
-
-#### Idempotency — best-effort, not exactly-once
-
-The kit writes a `"pending"` sentinel before executing, so a concurrent retry that sees it backs off and asks the caller to retry. A retry that sees a cached result replays it without re-executing.
-
-**Limitation:** The underlying KV store has no compare-and-swap. The pending sentinel narrows — but does not fully close — the double-execute window. True exactly-once delivery requires a strongly consistent store (a Durable Object or equivalent). On execute failure the sentinel is deleted so a legitimate retry can re-run.
 
 ## Endpoints mounted by `createMcpServer`
 
@@ -233,6 +243,22 @@ The Hono app returned by `createMcpServer` must be served at the **origin root**
 | `GET`    | `/mcp`                                    | 405 — stateless mode, no SSE                            |
 | `DELETE` | `/mcp`                                    | 405 — stateless mode, no sessions                       |
 
+### Request body limit
+
+All request bodies — OAuth endpoints and `POST /mcp` — are capped at **1 MB** (HTTP 413 if exceeded). If your tools accept large inputs (e.g. document contents), pre-process or chunk them before sending.
+
+## OAuth / PKCE client flow
+
+The kit implements OAuth 2.1 with PKCE (S256). A standards-compliant MCP client discovers and authenticates as follows:
+
+1. **Discovery** — `GET /.well-known/oauth-authorization-server` (RFC 8414) returns server metadata including `authorization_endpoint`, `token_endpoint`, and `registration_endpoint`.
+2. **Dynamic Client Registration** — `POST /register` with `{ "redirect_uris": ["https://your-client/callback"] }` returns a `client_id`.
+3. **Authorization** — redirect the user to `GET /authorize` with `response_type=code`, `client_id`, `redirect_uri`, `code_challenge` (S256 PKCE), and optionally `scope`. The built-in identity form collects credentials and calls your `identity.verify`. On success, the server 302-redirects to `redirect_uri?code=<auth_code>`.
+4. **Token exchange** — `POST /token` with `grant_type=authorization_code`, `code`, `client_id`, `redirect_uri`, and `code_verifier`. Returns `{ access_token, refresh_token, expires_in, token_type: "Bearer" }`.
+5. **Call tools** — send MCP JSON-RPC to `POST /mcp` with `Authorization: Bearer <access_token>`.
+6. **Token refresh** — `POST /token` with `grant_type=refresh_token` and `refresh_token`. Issues a new access + refresh token pair (rotation). Note: the prior access token remains valid until its TTL (~1 hour) expires naturally.
+7. **Revocation** — `POST /revoke` with the access or refresh token to invalidate it immediately (paired token is also revoked).
+
 ## Bring your own storage
 
 The default `createMemoryStorage()` is suitable for tests only — it is not persistent and is not shared across isolates or instances; never use it in production. `createCloudflareKvStorage(kv)` wraps a Cloudflare KV namespace for production. For any other backend, implement `KvLike` (three methods: `get`, `put`, `delete`) and pass it as `storage`.
@@ -245,18 +271,29 @@ See [docs/deploy.md](docs/deploy.md) for runtime-specific entry-point wrappers (
 
 ## Public API
 
-Exported from `mcp-server-kit`:
+### Primary API (start here)
 
 - `createMcpServer(config)` — factory; returns a Hono app
 - `createMemoryStorage()` — in-memory `KvLike` for tests
 - `createCloudflareKvStorage(kv)` — wraps a Cloudflare KV namespace
 - `registerMutatingTool(server, tool, ctx)` — low-level registration helper
 - `registerConfirmTool(server, ctx, mutatingTools)` — low-level confirm registration
-- `renderAuthorizePage(identity, params)` — renders the built-in login form HTML
 - `isMutating(t)` — type guard: `true` when `t` is a `MutatingToolDef`
-- `version` — package version string
 
 Types: `McpServerConfig`, `ScopeConfig`, `IdentityField`, `IdentityConfig`, `Branding`, `ObservabilityHooks`, `ToolContext`, `ToolDef`, `MutatingToolDef`, `RateLimitConfig`, `KvLike`, `KVNamespaceLike`, `AuthorizePageParams`
+
+### Advanced / low-level API
+
+Reach for these when you need to compose your own Hono app — custom middleware, sub-path mounting, or a custom OAuth UI — rather than using `createMcpServer` directly.
+
+- `createOAuthProvider(config)` — build the OAuth provider independently. `OAuthProviderConfig` fields: `storage`, `scopes`, `baseUrl`, and optional `now?: () => number` (injectable clock for deterministic testing).
+- `mountOAuthRoutes(app, deps)` — mount `/register`, `/authorize`, `/token`, `/revoke` onto an existing Hono app.
+- `mountDiscovery(app, deps)` — mount `/.well-known/oauth-authorization-server` and `/.well-known/oauth-protected-resource`.
+- `createRateLimiter({ storage, config? })` — build the rate limiter independently.
+- `handleMcpRequest(req, deps)` — handle a single `POST /mcp` request; returns a `Promise<Response>`.
+- `renderAuthorizePage(params)` — render the built-in login form HTML (use when building a custom `/authorize` handler).
+
+Types: `OAuthProvider`, `OAuthProviderConfig`, `TokenPair`, `OAuthRouteDeps`, `DiscoveryDeps`, `RateLimiter`, `McpRequestDeps`
 
 ## License
 

@@ -20,6 +20,9 @@ All values are strings. Serialization (JSON, etc.) is the caller's responsibilit
 
 ## Built-in adapters
 
+> **Warning:** `createMemoryStorage()` is not persistent and is not shared across isolates or
+> processes. It is suitable for local development and unit tests only. Never use it in production.
+
 | Adapter       | Export                          | Use case                                      |
 | ------------- | ------------------------------- | --------------------------------------------- |
 | In-memory     | `createMemoryStorage()`         | Tests and local dev (data is lost on restart) |
@@ -64,6 +67,7 @@ import {
   GetItemCommand,
   PutItemCommand,
   DeleteItemCommand,
+  type AttributeValue,
 } from "@aws-sdk/client-dynamodb";
 import type { KvLike } from "mcp-server-kit";
 
@@ -79,16 +83,17 @@ export function createDynamoDbStorage(
       return res.Item?.value?.S ?? null;
     },
     async put(key, value, opts) {
-      const item: Record<string, unknown> = {
-        TableName: tableName,
-        Item: { pk: { S: key }, value: { S: value } },
-      };
       // DynamoDB TTL is a Unix epoch timestamp, not a duration.
+      const Item: Record<string, AttributeValue> = {
+        pk: { S: key },
+        value: { S: value },
+      };
       if (opts?.ttlSeconds) {
-        const ttl = Math.floor(Date.now() / 1000) + opts.ttlSeconds;
-        (item.Item as Record<string, unknown>).ttl = { N: String(ttl) };
+        Item.ttl = {
+          N: String(Math.floor(Date.now() / 1000) + opts.ttlSeconds),
+        };
       }
-      await client.send(new PutItemCommand(item as never));
+      await client.send(new PutItemCommand({ TableName: tableName, Item }));
     },
     async delete(key) {
       await client.send(
