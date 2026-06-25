@@ -1,0 +1,138 @@
+# Deploying mcp-server-kit
+
+`createMcpServer` returns a [Hono](https://hono.dev/) app. Hono has first-party adapters for every major runtime — wrap the app in the adapter for your target and you're done.
+
+## Cloudflare Workers
+
+Use `createCloudflareKvStorage` to wrap your KV namespace binding.
+
+```ts
+// src/index.ts
+import { createMcpServer, createCloudflareKvStorage } from "mcp-server-kit";
+import { tools } from "./tools.js";
+
+interface Env {
+  KV: KVNamespace;
+}
+
+const app = createMcpServer({
+  baseUrl: "https://mcp.example.com",
+  storage: createCloudflareKvStorage(
+    (globalThis as unknown as { KV: KVNamespace }).KV,
+  ),
+  scopes: [{ name: "account:read", default: true }],
+  tools,
+});
+
+export default {
+  fetch: (req: Request, env: Env) => app.fetch(req, env),
+} satisfies ExportedHandler<Env>;
+```
+
+`wrangler.toml` — bind your KV namespace:
+
+```toml
+name = "my-mcp-server"
+main = "src/index.ts"
+compatibility_date = "2024-09-23"
+
+[[kv_namespaces]]
+binding = "KV"
+id = "<your-kv-namespace-id>"
+```
+
+Storage: `createCloudflareKvStorage` — built in, no extra install.
+
+## Node.js (`@hono/node-server`)
+
+```bash
+npm install @hono/node-server
+```
+
+Use any `KvLike` implementation. The in-memory adapter works for single-process deployments; use the Redis or Postgres adapter from [docs/storage-adapters.md](storage-adapters.md) for persistence.
+
+```ts
+// src/index.ts
+import { serve } from "@hono/node-server";
+import { createMcpServer, createMemoryStorage } from "mcp-server-kit";
+import { tools } from "./tools.js";
+
+const app = createMcpServer({
+  baseUrl: process.env.BASE_URL ?? "http://localhost:3000",
+  storage: createMemoryStorage(), // swap for Redis/Postgres adapter in production
+  scopes: [{ name: "account:read", default: true }],
+  tools,
+});
+
+serve({ fetch: app.fetch, port: 3000 }, (info) => {
+  console.log(`Listening on http://localhost:${info.port}`);
+});
+```
+
+## AWS Lambda (`hono/aws-lambda`)
+
+```bash
+npm install hono
+```
+
+Hono's `handle` adapter converts a Lambda event to a standard `Request` and back.
+
+```ts
+// src/handler.ts
+import { handle } from "hono/aws-lambda";
+import { createMcpServer, createMemoryStorage } from "mcp-server-kit";
+import { tools } from "./tools.js";
+
+// In production, replace createMemoryStorage() with a DynamoDB or Redis adapter
+// (see docs/storage-adapters.md). Lambda is stateless — in-memory storage is
+// lost between cold starts.
+const app = createMcpServer({
+  baseUrl: process.env.BASE_URL ?? "https://mcp.example.com",
+  storage: createMemoryStorage(),
+  scopes: [{ name: "account:read", default: true }],
+  tools,
+});
+
+export const handler = handle(app);
+```
+
+SAM / CDK: point the function's handler at `src/handler.handler` and set the `BASE_URL` environment variable to your API Gateway or function URL.
+
+## Vercel
+
+Vercel supports Hono via its built-in Node.js runtime. Export `GET` and `POST` named handlers from an API route:
+
+```ts
+// app/api/[[...route]]/route.ts  (Next.js App Router)
+import { handle } from "hono/vercel";
+import { createMcpServer, createMemoryStorage } from "mcp-server-kit";
+import { tools } from "@/lib/tools.js";
+
+export const runtime = "edge"; // or "nodejs"
+
+// In production, replace createMemoryStorage() with a persistent adapter
+// (see docs/storage-adapters.md). Edge functions are stateless.
+const app = createMcpServer({
+  baseUrl: process.env.NEXT_PUBLIC_BASE_URL ?? "https://mcp.example.com",
+  storage: createMemoryStorage(),
+  scopes: [{ name: "account:read", default: true }],
+  tools,
+});
+
+export const GET = handle(app);
+export const POST = handle(app);
+```
+
+For the `"nodejs"` runtime, substitute `"hono/vercel"` with `"@hono/node-server/vercel"` if the Vercel adapter requires it — check the current Hono docs for the correct import.
+
+---
+
+## Storage adapter summary
+
+| Runtime                   | Recommended storage                                                        |
+| ------------------------- | -------------------------------------------------------------------------- |
+| Cloudflare Workers        | `createCloudflareKvStorage(env.KV)`                                        |
+| Node (persistent)         | Redis or Postgres adapter (see [storage-adapters.md](storage-adapters.md)) |
+| AWS Lambda (persistent)   | DynamoDB adapter (see [storage-adapters.md](storage-adapters.md))          |
+| Vercel Edge (persistent)  | Redis adapter via `@upstash/redis` or similar                              |
+| Any runtime (tests / dev) | `createMemoryStorage()`                                                    |
