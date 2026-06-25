@@ -56,11 +56,14 @@ export interface ObservabilityHooks {
     tool: string;
     input: unknown;
   }): Promise<void>;
-  /** Called before a mutating tool's execute phase runs. */
+  /**
+   * Called after a mutating tool's execute phase succeeds. Awaited by the
+   * confirm flow (durable side-effect, e.g. an audit-ledger write).
+   */
   onMutation?(event: {
     userId: string;
-    tool: string;
-    preview: { summary: string; data: unknown };
+    toolName: string;
+    summary: string;
   }): Promise<void>;
 }
 

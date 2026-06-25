@@ -2,19 +2,7 @@ import { describe, it, expect } from "vitest";
 import { z } from "zod";
 import { createMcpServer } from "../src/server.js";
 import { createMemoryStorage } from "../src/storage/memory.js";
-
-async function pkce() {
-  const verifier = "verifier-fixed-string-1234567890-abcdefghij";
-  const digest = await crypto.subtle.digest(
-    "SHA-256",
-    new TextEncoder().encode(verifier),
-  );
-  const challenge = btoa(String.fromCharCode(...new Uint8Array(digest)))
-    .replace(/\+/g, "-")
-    .replace(/\//g, "_")
-    .replace(/=+$/, "");
-  return { verifier, challenge };
-}
+import { getToken } from "./helpers.js";
 
 function makeApp() {
   return createMcpServer({
@@ -37,50 +25,6 @@ function makeApp() {
       },
     ],
   });
-}
-
-// Helper: drive register → authorize(verify) → token, return access token.
-async function getToken(app: ReturnType<typeof makeApp>) {
-  const reg = await (
-    await app.request("/register", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ redirect_uris: ["https://app/cb"] }),
-    })
-  ).json();
-  const { challenge, verifier } = await pkce();
-  const authRes = await app.request("/authorize", {
-    method: "POST",
-    redirect: "manual",
-    headers: { "content-type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      response_type: "code",
-      client_id: reg.client_id,
-      redirect_uri: "https://app/cb",
-      code_challenge: challenge,
-      code_challenge_method: "S256",
-      state: "s",
-      resource: "https://example.test/mcp",
-      email: "a@b.c",
-    }).toString(),
-  });
-  const location = authRes.headers.get("location")!;
-  const code = new URL(location).searchParams.get("code")!;
-  const tok = await (
-    await app.request("/token", {
-      method: "POST",
-      headers: { "content-type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({
-        grant_type: "authorization_code",
-        code,
-        client_id: reg.client_id,
-        redirect_uri: "https://app/cb",
-        code_verifier: verifier,
-        resource: "https://example.test/mcp",
-      }).toString(),
-    })
-  ).json();
-  return tok.access_token as string;
 }
 
 describe("createMcpServer read tools", () => {

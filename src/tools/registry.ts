@@ -3,8 +3,9 @@
 // Registers each configured tool onto a per-request McpServer:
 //   - Read tools (no `scope`) always register.
 //   - A tool carrying a `scope` registers only when `grantedScopes` includes it.
-//   - Mutating tools register a STUB that throws "two-phase not enabled" — the real
-//     two-phase preview/confirm wiring lands in Task 9 (this keeps the read path runnable).
+//   - Mutating tools register via `registerMutatingTool` (two-phase preview), and when ANY
+//     mutating tool is granted, ONE shared `confirm_request` tool is registered to execute
+//     them (see two-phase.ts).
 //
 // The Zod inputSchema → SDK shape conversion mirrors brad-paws `mcp-server.ts`: the SDK's
 // deprecated `tool(name, description, shape, annotations, cb)` overload takes the Zod object's
@@ -17,6 +18,7 @@ import {
   type MutatingToolDef,
   type ToolContext,
 } from "../config.js";
+import { registerMutatingTool, registerConfirmTool } from "../two-phase.js";
 
 type AnyTool = ToolDef | MutatingToolDef;
 
@@ -40,21 +42,21 @@ export function registerTools(
   ctx: ToolContext,
   grantedScopes: string[],
 ): void {
+  const grantedMutating: MutatingToolDef[] = [];
+
   for (const tool of tools) {
     if (!isGranted(tool, grantedScopes)) continue;
 
-    const shape = toShape(tool.inputSchema);
-    const annotations = tool.annotations ?? {};
-
     if (isMutating(tool)) {
-      // Task 9 replaces this stub with the two-phase preview/confirm handler.
-      server.tool(tool.name, tool.description, shape, annotations, async () => {
-        throw new Error("two-phase not enabled");
-      });
+      // Two-phase: the tool call previews; execution happens via confirm_request.
+      registerMutatingTool(server, tool, ctx);
+      grantedMutating.push(tool);
       continue;
     }
 
     const readTool = tool as ToolDef;
+    const shape = toShape(tool.inputSchema);
+    const annotations = tool.annotations ?? {};
     server.tool(
       tool.name,
       tool.description,
@@ -65,5 +67,10 @@ export function registerTools(
         return result as { content: Array<{ type: "text"; text: string }> };
       },
     );
+  }
+
+  // Register the ONE shared confirm_request tool whenever any mutating tool is present.
+  if (grantedMutating.length > 0) {
+    registerConfirmTool(server, ctx, grantedMutating);
   }
 }

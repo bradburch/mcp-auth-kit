@@ -4,6 +4,10 @@
 import type { Hono } from "hono";
 import type { OAuthProvider } from "./provider.js";
 import type { IdentityConfig } from "../config.js";
+import {
+  renderAuthorizePage,
+  type AuthorizePageParams,
+} from "../identity/page.js";
 
 // Re-export discovery so callers can import everything from one module.
 export { mountDiscovery } from "./discovery.js";
@@ -57,58 +61,26 @@ async function parseBody(req: Request): Promise<Record<string, string>> {
   }
 }
 
-/** Render a minimal HTML login form (replaced by branded form in Task 9). */
-function renderMinimalForm(opts: {
-  fields: IdentityConfig["fields"];
-  oauthParams: Record<string, string>;
-  error?: string;
-  prefill?: Record<string, string>;
-}): string {
-  const hiddenInputs = Object.entries(opts.oauthParams)
-    .map(
-      ([k, v]) => `<input type="hidden" name="${k}" value="${escapeHtml(v)}">`,
-    )
-    .join("\n");
-
-  const fieldInputs = opts.fields
-    .map((f) => {
-      const val = opts.prefill?.[f.name] ?? "";
-      return `
-        <label for="${f.name}">${escapeHtml(f.label)}</label>
-        <input
-          id="${f.name}"
-          type="${f.type ?? "text"}"
-          name="${f.name}"
-          value="${escapeHtml(val)}"
-          ${f.required !== false ? "required" : ""}
-        >`;
-    })
-    .join("\n");
-
-  const errorHtml = opts.error
-    ? `<p style="color:red">${escapeHtml(opts.error)}</p>`
-    : "";
-
-  return `<!DOCTYPE html>
-<html lang="en">
-<head><meta charset="utf-8"><title>Sign in</title></head>
-<body>
-${errorHtml}
-<form method="post">
-${hiddenInputs}
-${fieldInputs}
-<button type="submit">Sign in</button>
-</form>
-</body>
-</html>`;
-}
-
-function escapeHtml(s: string): string {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
+/**
+ * Build the AuthorizePageParams shared by the GET (initial render) and POST (error
+ * re-render) paths from a flat OAuth-param map, optionally with an error + prefill.
+ */
+function authorizePageParams(
+  oauthParams: Record<string, string>,
+  extra?: { error?: string; prefill?: Record<string, string> },
+): AuthorizePageParams {
+  return {
+    response_type: oauthParams.response_type ?? "code",
+    client_id: oauthParams.client_id ?? "",
+    redirect_uri: oauthParams.redirect_uri ?? "",
+    code_challenge: oauthParams.code_challenge ?? "",
+    code_challenge_method: oauthParams.code_challenge_method ?? "S256",
+    state: oauthParams.state ?? "",
+    resource: oauthParams.resource ?? "",
+    scope: oauthParams.scope ?? "",
+    error: extra?.error,
+    prefill: extra?.prefill,
+  };
 }
 
 // ─── Route mounting ───────────────────────────────────────────────────────────
@@ -239,7 +211,6 @@ export function mountOAuthRoutes(
       );
     }
 
-    const fields = identity?.fields ?? [];
     const oauthParams: Record<string, string> = {
       client_id: clientId,
       redirect_uri: redirectUri,
@@ -251,7 +222,12 @@ export function mountOAuthRoutes(
       scope,
     };
 
-    return c.html(renderMinimalForm({ fields, oauthParams }));
+    if (!identity) {
+      return c.text("No identity provider configured", 400);
+    }
+    return c.html(
+      renderAuthorizePage(identity, authorizePageParams(oauthParams)),
+    );
   });
 
   // ── POST /authorize ────────────────────────────────────────────────────────
@@ -296,13 +272,17 @@ export function mountOAuthRoutes(
     }
 
     function renderError(error: string) {
+      if (!identity) {
+        return c.json(
+          oauthError("access_denied", "No identity provider configured"),
+          400,
+        );
+      }
       return c.html(
-        renderMinimalForm({
-          fields,
-          oauthParams,
-          error,
-          prefill: identityFields,
-        }),
+        renderAuthorizePage(
+          identity,
+          authorizePageParams(oauthParams, { error, prefill: identityFields }),
+        ),
         401,
       );
     }

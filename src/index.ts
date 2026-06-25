@@ -9,6 +9,13 @@ export { createCloudflareKvStorage } from "./storage/kv-cloudflare.js";
 export type { KVNamespaceLike } from "./storage/kv-cloudflare.js";
 export type { KvLike } from "./storage/types.js";
 
+// Two-phase preview/confirm helpers.
+export { registerMutatingTool, registerConfirmTool } from "./two-phase.js";
+
+// Built-in identity authorize page.
+export { renderAuthorizePage } from "./identity/page.js";
+export type { AuthorizePageParams } from "./identity/page.js";
+
 // Config types + helpers.
 export { isMutating } from "./config.js";
 export type {
