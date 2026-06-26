@@ -1,6 +1,6 @@
 # Security Policy
 
-`mcp-auth-kit` implements OAuth 2.1 / PKCE, token issuance, and rate limiting —
+`mcp-oauth-kit` implements OAuth 2.1 / PKCE, token issuance, and rate limiting —
 security is the point of the library. Please report vulnerabilities responsibly.
 
 ## Reporting a vulnerability

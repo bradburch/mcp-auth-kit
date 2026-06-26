@@ -1,6 +1,6 @@
 # Storage adapters
 
-`mcp-auth-kit` is storage-agnostic. It depends only on the three-method `KvLike` interface, which you can implement against any key-value store.
+`mcp-oauth-kit` is storage-agnostic. It depends only on the three-method `KvLike` interface, which you can implement against any key-value store.
 
 ## The `KvLike` interface
 
@@ -28,13 +28,13 @@ All values are strings. Serialization (JSON, etc.) is the caller's responsibilit
 
 ## Example adapters
 
-The snippets below show how to wrap common backends. They are **examples, not shipped dependencies** — `mcp-auth-kit` does not install or import Redis, DynamoDB, or Postgres. Copy, adapt, and own them in your own project.
+The snippets below show how to wrap common backends. They are **examples, not shipped dependencies** — `mcp-oauth-kit` does not install or import Redis, DynamoDB, or Postgres. Copy, adapt, and own them in your own project.
 
 ### Redis (ioredis)
 
 ```ts
 import Redis from "ioredis";
-import type { KvLike } from "mcp-auth-kit";
+import type { KvLike } from "mcp-oauth-kit";
 
 export function createRedisStorage(redis: Redis): KvLike {
   return {
@@ -65,7 +65,7 @@ import {
   DeleteItemCommand,
   type AttributeValue,
 } from "@aws-sdk/client-dynamodb";
-import type { KvLike } from "mcp-auth-kit";
+import type { KvLike } from "mcp-oauth-kit";
 
 export function createDynamoDbStorage(client: DynamoDBClient, tableName: string): KvLike {
   return {
@@ -104,7 +104,7 @@ export function createDynamoDbStorage(client: DynamoDBClient, tableName: string)
 
 ```ts
 import type { Pool } from "pg";
-import type { KvLike } from "mcp-auth-kit";
+import type { KvLike } from "mcp-oauth-kit";
 
 // Requires a table:
 //   CREATE TABLE kv_store (

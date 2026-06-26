@@ -1,4 +1,4 @@
-# Contributing to mcp-auth-kit
+# Contributing to mcp-oauth-kit
 
 Thanks for your interest in improving the kit. This project aims to be a small,
 auditable, production-grade foundation for OAuth-protected MCP servers — contributions

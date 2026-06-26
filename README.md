@@ -1,4 +1,4 @@
-# mcp-auth-kit
+# mcp-oauth-kit
 
 A production-minded MCP server kit: OAuth 2.1/PKCE, rate limiting, scope-gated tools, and two-phase confirm — bring your own tools, identity, and storage.
 
@@ -9,7 +9,7 @@ A production-minded MCP server kit: OAuth 2.1/PKCE, rate limiting, scope-gated t
 ## Install
 
 ```bash
-npm install mcp-auth-kit
+npm install mcp-oauth-kit
 ```
 
 Peer dependencies (not bundled):
@@ -22,7 +22,7 @@ npm install hono @modelcontextprotocol/sdk
 
 ```ts
 import { z } from "zod";
-import { createMcpServer, createMemoryStorage } from "mcp-auth-kit";
+import { createMcpServer, createMemoryStorage } from "mcp-oauth-kit";
 
 const app = createMcpServer({
   baseUrl: "https://mcp.example.com",

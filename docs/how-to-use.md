@@ -1,4 +1,4 @@
-# How to use mcp-auth-kit
+# How to use mcp-oauth-kit
 
 A practical, step-by-step guide to building and running an OAuth-protected MCP server with
 the kit. For the exhaustive config/API reference, see the [README](../README.md); for
@@ -33,7 +33,7 @@ MCP client ──discovery──▶ /.well-known/*
 ## 1. Install
 
 ```bash
-npm install mcp-auth-kit
+npm install mcp-oauth-kit
 # peer dependencies (not bundled):
 npm install hono @modelcontextprotocol/sdk zod
 ```
@@ -48,7 +48,7 @@ fine for local development.
 ```ts
 // server.ts
 import { z } from "zod";
-import { createMcpServer, createMemoryStorage } from "mcp-auth-kit";
+import { createMcpServer, createMemoryStorage } from "mcp-oauth-kit";
 
 export const app = createMcpServer({
   baseUrl: "http://localhost:3000", // MUST match where the server is actually reachable

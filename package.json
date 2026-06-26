@@ -1,5 +1,5 @@
 {
-  "name": "mcp-auth-kit",
+  "name": "mcp-oauth-kit",
   "version": "0.1.0",
   "description": "A production-minded MCP server kit: OAuth/PKCE, rate limiting, scope-gated tools, and two-phase confirm — bring your own tools, identity, and storage.",
   "license": "MIT",

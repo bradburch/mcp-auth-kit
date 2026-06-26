@@ -15,7 +15,7 @@ import { createRateLimiter } from "./rate-limit.js";
 import { handleMcpRequest, jsonRpcError, JSON_RPC_ERROR } from "./transport.js";
 
 /** Default server identity reported to MCP clients (adopter can't yet override). */
-const DEFAULT_SERVER_NAME = "mcp-auth-kit";
+const DEFAULT_SERVER_NAME = "mcp-oauth-kit";
 const DEFAULT_SERVER_VERSION = "0.1.0";
 
 /** JSON-RPC error for the GET/DELETE 405 responses (no SSE / sessions in stateless mode). */

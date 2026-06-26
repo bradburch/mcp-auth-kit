@@ -30,7 +30,7 @@ What actually happened (include error messages / stack traces).
 
 ## Environment
 
-- `mcp-auth-kit` version:
+- `mcp-oauth-kit` version:
 - Node version:
 - Storage backend (memory / Cloudflare KV / custom):
 - Runtime (Cloudflare Workers / Node / Lambda / other):
