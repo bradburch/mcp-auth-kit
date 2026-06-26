@@ -1,6 +1,8 @@
 # mcp-auth-kit
 
-Production-ready MCP server kit: OAuth 2.1/PKCE, rate limiting, scope-gated tools, and two-phase confirm — bring your own tools, identity, and storage.
+A production-minded MCP server kit: OAuth 2.1/PKCE, rate limiting, scope-gated tools, and two-phase confirm — bring your own tools, identity, and storage.
+
+> **⚠️ Status: pre-1.0 (`0.1.0`).** The OAuth core is independently reviewed and tested, but the API may still change and there are **deliberate design limitations** to understand before production use — most importantly: single-use code redemption, refresh-token rotation, and confirm idempotency are **best-effort, not exactly-once** on a storage backend without compare-and-swap; and per-IP rate limiting needs a correct `ipExtractor` when you're not behind Cloudflare. Read [SECURITY.md](SECURITY.md#scope-and-known-limitations) before deploying, and pin a version.
 
 **New here?** Start with the [How-to-use guide](docs/how-to-use.md) for a step-by-step walkthrough (including an end-to-end OAuth flow you can run with `curl`). This README is the full config/API reference.
 

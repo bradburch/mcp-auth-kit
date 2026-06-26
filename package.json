@@ -1,7 +1,7 @@
 {
   "name": "mcp-auth-kit",
   "version": "0.1.0",
-  "description": "Production-ready MCP server kit: OAuth/PKCE, rate limiting, scope-gated tools, and two-phase confirm — bring your own tools, identity, and storage.",
+  "description": "A production-minded MCP server kit: OAuth/PKCE, rate limiting, scope-gated tools, and two-phase confirm — bring your own tools, identity, and storage.",
   "license": "MIT",
   "type": "module",
   "exports": {

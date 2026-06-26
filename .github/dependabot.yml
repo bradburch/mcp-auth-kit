@@ -1,0 +1,20 @@
+version: 2
+updates:
+  # npm dependencies — group dev tooling so it lands in one PR per week.
+  - package-ecosystem: npm
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 10
+    groups:
+      dev-dependencies:
+        dependency-type: development
+        update-types:
+          - minor
+          - patch
+
+  # Keep GitHub Actions (checkout, setup-node, …) current.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
