@@ -14,7 +14,7 @@
     "dist"
   ],
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
@@ -33,7 +33,7 @@
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "@modelcontextprotocol/sdk": "^1",
-    "@types/node": "^24",
+    "@types/node": "^22",
     "eslint": "^10.5.0",
     "eslint-config-prettier": "^10.1.8",
     "hono": "^4",

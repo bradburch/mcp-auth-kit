@@ -38,7 +38,7 @@ npm install mcp-auth-kit
 npm install hono @modelcontextprotocol/sdk zod
 ```
 
-Node **20+** is required.
+Node **22+** is required.
 
 ## 2. A minimal server
 

@@ -15,7 +15,7 @@ npm run lint         # eslint
 npm run format:check # prettier --check
 ```
 
-Node **20+** is required (see `package.json` `engines`).
+Node **22+** is required (see `package.json` `engines`). CI runs the suite on Node 22, 24, and 26.
 
 ## Before opening a pull request
 

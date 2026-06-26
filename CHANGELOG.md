@@ -22,6 +22,8 @@ for production use.
 - Confirmation tokens in the two-phase flow are now bound to the previewing user.
 - Project hygiene: `SECURITY.md`, `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, issue/PR
   templates, `engines` field, and a CI build step.
+- Minimum supported Node is **22** (Node 20 reached end-of-life); CI runs the suite on a
+  Node 22 / 24 / 26 matrix, and `@types/node` tracks the support floor.
 
 ### Changed
 
