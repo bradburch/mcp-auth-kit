@@ -12,6 +12,11 @@ updates:
         update-types:
           - minor
           - patch
+    ignore:
+      # @types/node is intentionally pinned to the engines floor (Node 22) so the type
+      # checker reflects the OLDEST supported runtime. Don't let it drift to a newer major.
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
 
   # Keep GitHub Actions (checkout, setup-node, …) current.
   - package-ecosystem: github-actions
