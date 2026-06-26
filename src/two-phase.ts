@@ -8,7 +8,7 @@
 //      `idempotencyKey`. confirm_request loads+deletes the token, runs `execute(data, ctx)`,
 //      caches the result under the idempotency key (10-min TTL), and fires `hooks.onMutation`.
 //
-// Idempotency (ported from brad-paws `mcp-server.ts`): KV has no compare-and-swap, so we
+// Idempotency: KV has no compare-and-swap, so we
 // claim the idempotency key with a pending sentinel before executing. A concurrent/retried
 // confirm that sees a cached RESULT returns it (no re-exec); one that sees the pending
 // sentinel backs off and asks the caller to retry. This NARROWS — but does not fully close —

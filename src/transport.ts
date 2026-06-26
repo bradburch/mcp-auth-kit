@@ -4,9 +4,9 @@
 // (sessionIdGenerator: undefined, enableJsonResponse: true) — no sessions, auth is
 // per-request via Bearer token. GET/DELETE are 405 (no SSE, no sessions to terminate).
 //
-// Ported from brad-paws `server/routes/mcp/transport.ts`. Key subtlety: the request body
-// must be read once up front (before any middleware could consume the stream), then a fresh
-// Request is reconstructed from that text so the SDK transport can re-read it.
+// Key subtlety: the request body must be read once up front (before any middleware could
+// consume the stream), then a fresh Request is reconstructed from that text so the SDK
+// transport can re-read it.
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import type { OAuthProvider } from "./oauth/provider.js";

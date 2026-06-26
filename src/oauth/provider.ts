@@ -9,7 +9,7 @@ import {
 } from "../storage/keys.js";
 import { sha256Hex, randomToken } from "../crypto.js";
 
-/** TTL constants in seconds (identical to the brad-paws reference). */
+/** TTL constants in seconds. */
 const TTL = {
   CLIENT: 30 * 24 * 60 * 60, // 30 days
   AUTH_CODE: 5 * 60, // 5 minutes

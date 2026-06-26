@@ -1,7 +1,7 @@
 // Built-in OAuth authorize page renderer.
 //
-// Generalised from brad-paws `oauth-pages.ts`: instead of hard-coded name/phone fields and
-// fixed branding, the form is built from `identity.fields` (label + typed input) plus optional
+// Instead of hard-coded fields and fixed branding, the form is built from
+// `identity.fields` (label + typed input) plus optional
 // `identity.branding` (app name heading, logo, accent colour). The OAuth parameters are carried
 // through as hidden inputs and the form POSTs back to the same `/authorize` path.
 //
