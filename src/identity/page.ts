@@ -27,6 +27,12 @@ export interface AuthorizePageParams {
 
 const DEFAULT_ACCENT = "#3b82f6";
 
+/** Accent colour is interpolated into a `<style>` block — only allow a strict hex
+ *  colour so a malicious `branding.accentColor` can't inject arbitrary CSS. */
+function safeAccent(value: string | undefined): string {
+  return value && /^#[0-9a-fA-F]{3,8}$/.test(value) ? value : DEFAULT_ACCENT;
+}
+
 function escapeHtml(s: string): string {
   return s
     .replace(/&/g, "&amp;")
@@ -48,7 +54,7 @@ function hidden(name: string, value: string): string {
 export function renderAuthorizePage(identity: IdentityConfig, params: AuthorizePageParams): string {
   const branding = identity.branding;
   const appName = escapeHtml(branding?.appName ?? "Sign in");
-  const accent = escapeHtml(branding?.accentColor ?? DEFAULT_ACCENT);
+  const accent = safeAccent(branding?.accentColor);
   // Only emit an <img> for https:// or http:// schemes; reject javascript:, data:, etc.
   const rawLogoUrl = branding?.logoUrl ?? "";
   const logoUrlSafe =

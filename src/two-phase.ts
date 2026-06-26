@@ -19,6 +19,7 @@ import { z } from "zod";
 import type { MutatingToolDef, ToolContext } from "./config.js";
 import { confirmKey, idempotencyKey } from "./storage/keys.js";
 import { toShape } from "./tools/shape.js";
+import { randomToken } from "./crypto.js";
 
 /** Confirmation-token TTL — a previewed mutation expires after 5 minutes. */
 const CONFIRM_TTL_SECONDS = 300;
@@ -34,6 +35,8 @@ interface ConfirmPayload {
   toolName: string;
   summary: string;
   data: unknown;
+  /** The user who previewed the mutation — only they may confirm it. */
+  userId: string;
 }
 
 /** A tool result with MCP content (what tool handlers must return). */
@@ -70,11 +73,12 @@ export function registerMutatingTool(
     async (input: unknown) => {
       const preview = await tool.mutating.preview(input, ctx);
 
-      const token = crypto.randomUUID();
+      const token = randomToken();
       const payload: ConfirmPayload = {
         toolName: tool.name,
         summary: preview.summary,
         data: preview.data,
+        userId: ctx.userId,
       };
       await ctx.storage.put(confirmKey(token), JSON.stringify(payload), {
         ttlSeconds: CONFIRM_TTL_SECONDS,
@@ -157,7 +161,6 @@ export function registerConfirmTool(
           error: "This confirmation has expired or was already used.",
         });
       }
-      await ctx.storage.delete(cKey);
 
       let payload: ConfirmPayload;
       try {
@@ -169,6 +172,21 @@ export function registerConfirmTool(
           error: "Invalid confirmation payload.",
         });
       }
+
+      // Bind the confirmation to the user who previewed it — a leaked token must not let
+      // another user execute someone else's previewed mutation. Check ownership BEFORE
+      // consuming the single-use token so a wrong-user attempt can't burn the rightful
+      // user's token (denial of service).
+      if (payload.userId !== ctx.userId) {
+        await ctx.storage.delete(idemKey);
+        return jsonResult({
+          success: false,
+          error: "This confirmation has expired or was already used.",
+        });
+      }
+
+      // Ownership confirmed — consume the token (single-use) before executing.
+      await ctx.storage.delete(cKey);
 
       const tool = byName.get(payload.toolName);
       if (!tool) {

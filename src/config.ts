@@ -133,4 +133,10 @@ export interface McpServerConfig {
   tools: Array<ToolDef | MutatingToolDef>;
   rateLimits?: RateLimitConfig;
   hooks?: ObservabilityHooks;
+  /**
+   * Override how the trusted client IP is extracted for per-IP rate limiting.
+   * Defaults to CF-Connecting-IP → first hop of X-Forwarded-For. Set this when NOT
+   * deployed behind Cloudflare so an attacker can't spoof a header to reset buckets.
+   */
+  ipExtractor?: (req: Request) => string;
 }

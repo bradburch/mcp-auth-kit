@@ -1,14 +1,14 @@
 // OAuth HTTP route handlers (RFC 6749 / RFC 7009 / RFC 8414).
 // Provides mountOAuthRoutes(app, deps) for wiring POST /register, GET+POST /authorize,
 // POST /token, POST /revoke onto a Hono app.
-import type { Hono } from "hono";
+import type { Context, Hono } from "hono";
 import type { OAuthProvider } from "./provider.js";
 import type { IdentityConfig, ObservabilityHooks } from "../config.js";
 import { renderAuthorizePage, type AuthorizePageParams } from "../identity/page.js";
 
 import type { RateLimiter } from "../rate-limit.js";
 import { extractClientIp } from "../http/client-ip.js";
-import { bodyTooLarge } from "../http/body-limit.js";
+import { readCappedBody } from "../http/body-limit.js";
 
 // ─── Security header constants ───────────────────────────────────────────────
 
@@ -39,21 +39,37 @@ function hasFragment(uri: string): boolean {
   }
 }
 
-/** Parse application/x-www-form-urlencoded or JSON body into a flat string map. */
-async function parseBody(req: Request): Promise<Record<string, string>> {
+/**
+ * Read the (capped) request body and parse it — urlencoded, multipart, or JSON — into a
+ * flat string map. Returns a 413 Response when the body exceeds the cap. Non-string
+ * (File) multipart values are coerced to "" since OAuth fields are always text.
+ */
+async function readBodyParsed(req: Request): Promise<Record<string, string> | Response> {
+  const capped = await readCappedBody(req);
+  if (capped instanceof Response) return capped;
+
   const ct = req.headers.get("content-type") ?? "";
-  if (ct.includes("application/x-www-form-urlencoded")) {
-    const text = await req.text();
-    const params = new URLSearchParams(text);
-    const result: Record<string, string> = {};
-    for (const [k, v] of params.entries()) {
-      result[k] = v;
+  if (ct.includes("multipart/form-data")) {
+    try {
+      const form = await new Response(capped, { headers: { "content-type": ct } }).formData();
+      const result: Record<string, string> = {};
+      for (const [k, v] of form.entries()) result[k] = typeof v === "string" ? v : "";
+      return result;
+    } catch {
+      // Malformed multipart — treat as empty so callers return a clean 400, not a 500.
+      return {};
     }
+  }
+  if (ct.includes("application/x-www-form-urlencoded")) {
+    const result: Record<string, string> = {};
+    for (const [k, v] of new URLSearchParams(capped).entries()) result[k] = v;
     return result;
   }
-  // Fall back to JSON
   try {
-    return (await req.json()) as Record<string, string>;
+    const parsed = JSON.parse(capped) as unknown;
+    // Only an object yields fields; a bare null/array/scalar becomes an empty map so
+    // downstream `body.foo` access can't throw.
+    return parsed && typeof parsed === "object" ? (parsed as Record<string, string>) : {};
   } catch {
     return {};
   }
@@ -106,6 +122,12 @@ export interface OAuthRouteDeps {
   baseUrl: string;
   hooks?: ObservabilityHooks;
   rateLimiter?: RateLimiter;
+  /**
+   * Extract the trusted client IP for per-IP rate limiting. Defaults to
+   * {@link extractClientIp} (CF-Connecting-IP → X-Forwarded-For first hop).
+   * Override this off-Cloudflare so a spoofable header can't reset rate-limit buckets.
+   */
+  ipExtractor?: (req: Request) => string;
 }
 
 /**
@@ -133,17 +155,36 @@ async function fireAudit(
  */
 export function mountOAuthRoutes(
   app: Hono,
-  { provider, identity, hooks, rateLimiter }: OAuthRouteDeps,
+  { provider, identity, hooks, rateLimiter, ipExtractor }: OAuthRouteDeps,
 ): void {
+  const clientIp = ipExtractor ?? extractClientIp;
+
+  /**
+   * Apply a per-IP rate-limit bucket. Returns a 429 Response when the limit is exhausted,
+   * or null to proceed. No-op when no rate limiter is configured.
+   */
+  const ipRateLimited = async (
+    c: Context,
+    bucket: (rl: RateLimiter, ip: string) => Promise<boolean>,
+  ): Promise<Response | null> => {
+    if (!rateLimiter) return null;
+    const ok = await bucket(rateLimiter, clientIp(c.req.raw));
+    return ok ? null : c.json(oauthError("temporarily_unavailable", "rate limit exceeded"), 429);
+  };
+
   // ── POST /register ─────────────────────────────────────────────────────────
 
   app.post("/register", async (c) => {
-    const tooBig = bodyTooLarge(c.req.raw);
-    if (tooBig) return tooBig;
+    // Per-IP rate limit: unauthenticated DCR is a storage-exhaustion DoS vector.
+    const limited = await ipRateLimited(c, (rl, ip) => rl.checkIpToken(ip));
+    if (limited) return limited;
+
+    const capped = await readCappedBody(c.req.raw);
+    if (capped instanceof Response) return capped;
 
     let body: Record<string, unknown>;
     try {
-      body = await c.req.json();
+      body = JSON.parse(capped);
     } catch {
       return c.json(oauthError("invalid_client_metadata", "Request body must be JSON"), 400);
     }
@@ -250,18 +291,11 @@ export function mountOAuthRoutes(
     c.header("Content-Security-Policy", AUTHORIZE_CSP);
 
     // Per-IP rate limit: brute-force guard on credential submissions.
-    if (rateLimiter) {
-      const ip = extractClientIp(c.req.raw);
-      const allowed = await rateLimiter.checkIpAuthorize(ip);
-      if (!allowed) {
-        return c.json(oauthError("temporarily_unavailable", "rate limit exceeded"), 429);
-      }
-    }
+    const limited = await ipRateLimited(c, (rl, ip) => rl.checkIpAuthorize(ip));
+    if (limited) return limited;
 
-    const authBodyTooBig = bodyTooLarge(c.req.raw);
-    if (authBodyTooBig) return authBodyTooBig;
-
-    const formData = await c.req.parseBody();
+    const formData = await readBodyParsed(c.req.raw);
+    if (formData instanceof Response) return formData;
     const getString = (key: string) => String(formData[key] ?? "").trim();
 
     const oauthParams = extractOAuthParams(
@@ -311,9 +345,20 @@ export function mountOAuthRoutes(
       // No identity provider — reject (can't issue code without a userId).
       return c.json(oauthError("access_denied", "No identity provider configured"), 400);
     }
+
+    // Validate the client BEFORE checking credentials, and return the SAME error for a
+    // bad client as for bad credentials. Otherwise a bogus client_id (no registration
+    // needed) yields a different response for valid vs invalid credentials — a
+    // credential-validity / user-enumeration oracle.
+    const INVALID = "Invalid credentials. Please try again.";
+    const clientOk = await provider.validateClientRedirect(clientId, redirectUri);
+    if (!clientOk) {
+      return renderError(INVALID);
+    }
+
     const userId = await identity.verify(identityFields);
     if (userId === null) {
-      return renderError("Invalid credentials. Please try again.");
+      return renderError(INVALID);
     }
 
     // Issue auth code via provider (validates client + redirectUri internally).
@@ -348,23 +393,11 @@ export function mountOAuthRoutes(
     c.header("Pragma", TOKEN_CACHE_HEADERS["Pragma"]);
 
     // Per-IP rate limit on the token endpoint.
-    if (rateLimiter) {
-      const ip = extractClientIp(c.req.raw);
-      const allowed = await rateLimiter.checkIpToken(ip);
-      if (!allowed) {
-        return c.json(oauthError("temporarily_unavailable", "rate limit exceeded"), 429);
-      }
-    }
+    const limited = await ipRateLimited(c, (rl, ip) => rl.checkIpToken(ip));
+    if (limited) return limited;
 
-    const tokenBodyTooBig = bodyTooLarge(c.req.raw);
-    if (tokenBodyTooBig) return tokenBodyTooBig;
-
-    let body: Record<string, string>;
-    try {
-      body = await parseBody(c.req.raw);
-    } catch {
-      return c.json(oauthError("invalid_request", "Unable to parse request body"), 400);
-    }
+    const body = await readBodyParsed(c.req.raw);
+    if (body instanceof Response) return body;
 
     const grantType = body.grant_type ?? "";
     const clientId = body.client_id ?? "";
@@ -425,10 +458,12 @@ export function mountOAuthRoutes(
   // ── POST /revoke ───────────────────────────────────────────────────────────
 
   app.post("/revoke", async (c) => {
-    const revokeBodyTooBig = bodyTooLarge(c.req.raw);
-    if (revokeBodyTooBig) return revokeBodyTooBig;
+    // Per-IP rate limit: unauthenticated endpoint, guard against abuse.
+    const limited = await ipRateLimited(c, (rl, ip) => rl.checkIpToken(ip));
+    if (limited) return limited;
 
-    const body = await parseBody(c.req.raw);
+    const body = await readBodyParsed(c.req.raw);
+    if (body instanceof Response) return body;
     const token = body.token ?? "";
     const clientId = body.client_id ?? "";
 

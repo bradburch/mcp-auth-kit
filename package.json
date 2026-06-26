@@ -1,17 +1,24 @@
 {
-  "name": "mcp-server-kit",
-  "version": "0.0.0",
+  "name": "mcp-auth-kit",
+  "version": "0.1.0",
   "description": "Production-ready MCP server kit: OAuth/PKCE, rate limiting, scope-gated tools, and two-phase confirm — bring your own tools, identity, and storage.",
   "license": "MIT",
   "type": "module",
   "exports": {
-    ".": "./dist/index.js"
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
   },
   "files": [
     "dist"
   ],
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "prepublishOnly": "npm run build",
     "test": "vitest run",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "lint": "eslint .",

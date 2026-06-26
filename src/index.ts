@@ -1,4 +1,4 @@
-// Public API surface for mcp-server-kit.
+// Public API surface for mcp-auth-kit.
 
 // ─── Primary API ─────────────────────────────────────────────────────────────
 // Use these for building a standard MCP server with OAuth out of the box.

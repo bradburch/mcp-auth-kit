@@ -14,7 +14,7 @@ import type { RateLimiter } from "./rate-limit.js";
 import type { KvLike } from "./storage/types.js";
 import type { ToolContext, ToolDef, MutatingToolDef, ObservabilityHooks } from "./config.js";
 import { registerTools } from "./tools/registry.js";
-import { bodyTooLarge, readBodyTooLarge } from "./http/body-limit.js";
+import { readCappedBody } from "./http/body-limit.js";
 
 /** JSON-RPC error codes used by the transport layer. */
 export const JSON_RPC_ERROR = {
@@ -47,16 +47,12 @@ export interface McpRequestDeps {
  * and dispatch. Returns a JSON-RPC error Response on auth/rate-limit failure.
  */
 export async function handleMcpRequest(req: Request, deps: McpRequestDeps): Promise<Response> {
-  // Reject oversized bodies early (pre-auth DoS guard).
-  const earlyTooLarge = bodyTooLarge(req);
-  if (earlyTooLarge) return earlyTooLarge;
-
-  // Read the body immediately — must happen before anything else could consume the stream.
-  const requestBody = await req.text();
-
-  // Also check after reading, in case Content-Length was absent.
-  const lateTooLarge = readBodyTooLarge(requestBody);
-  if (lateTooLarge) return lateTooLarge;
+  // Read the body up front (before anything else could consume the stream), with the
+  // 1 MB cap enforced while streaming — a pre-auth DoS guard that never buffers an
+  // unbounded chunked body into memory.
+  const capped = await readCappedBody(req);
+  if (capped instanceof Response) return capped;
+  const requestBody = capped;
 
   // RFC 9728: tell clients where to discover OAuth endpoints on a 401.
   const resourceMetadataUrl = `${deps.baseUrl}/.well-known/oauth-protected-resource`;

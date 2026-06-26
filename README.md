@@ -1,11 +1,13 @@
-# mcp-server-kit
+# mcp-auth-kit
 
 Production-ready MCP server kit: OAuth 2.1/PKCE, rate limiting, scope-gated tools, and two-phase confirm — bring your own tools, identity, and storage.
+
+**New here?** Start with the [How-to-use guide](docs/how-to-use.md) for a step-by-step walkthrough (including an end-to-end OAuth flow you can run with `curl`). This README is the full config/API reference.
 
 ## Install
 
 ```bash
-npm install mcp-server-kit
+npm install mcp-auth-kit
 ```
 
 Peer dependencies (not bundled):
@@ -18,7 +20,7 @@ npm install hono @modelcontextprotocol/sdk
 
 ```ts
 import { z } from "zod";
-import { createMcpServer, createMemoryStorage } from "mcp-server-kit";
+import { createMcpServer, createMemoryStorage } from "mcp-auth-kit";
 
 const app = createMcpServer({
   baseUrl: "https://mcp.example.com",
@@ -81,15 +83,16 @@ See `examples/appointments/server.ts` for a complete working server.
 
 `createMcpServer(config: McpServerConfig)` accepts:
 
-| Field        | Type                                | Required | Description                                                                 |
-| ------------ | ----------------------------------- | -------- | --------------------------------------------------------------------------- |
-| `baseUrl`    | `string`                            | Yes      | Public base URL of this server (used in OAuth discovery and redirect URIs). |
-| `storage`    | `KvLike`                            | Yes      | Key-value store for tokens, rate-limit counters, and idempotency records.   |
-| `scopes`     | `ScopeConfig[]`                     | Yes      | OAuth scopes the server advertises.                                         |
-| `identity`   | `IdentityConfig`                    | No       | Built-in login-form identity provider. Omit to use a custom provider.       |
-| `tools`      | `Array<ToolDef \| MutatingToolDef>` | Yes      | Tool definitions registered on the MCP server.                              |
-| `rateLimits` | `RateLimitConfig`                   | No       | Per-hour thresholds for tool calls and OAuth endpoints.                     |
-| `hooks`      | `ObservabilityHooks`                | No       | Async callbacks for tool calls, OAuth lifecycle events, and mutation audit. |
+| Field         | Type                                | Required | Description                                                                         |
+| ------------- | ----------------------------------- | -------- | ----------------------------------------------------------------------------------- |
+| `baseUrl`     | `string`                            | Yes      | Public base URL of this server (used in OAuth discovery and redirect URIs).         |
+| `storage`     | `KvLike`                            | Yes      | Key-value store for tokens, rate-limit counters, and idempotency records.           |
+| `scopes`      | `ScopeConfig[]`                     | Yes      | OAuth scopes the server advertises.                                                 |
+| `identity`    | `IdentityConfig`                    | No       | Built-in login-form identity provider. Omit to use a custom provider.               |
+| `tools`       | `Array<ToolDef \| MutatingToolDef>` | Yes      | Tool definitions registered on the MCP server.                                      |
+| `rateLimits`  | `RateLimitConfig`                   | No       | Per-hour thresholds for tool calls and OAuth endpoints.                             |
+| `hooks`       | `ObservabilityHooks`                | No       | Async callbacks for tool calls, OAuth lifecycle events, and mutation audit.         |
+| `ipExtractor` | `(req: Request) => string`          | No       | Override how the trusted client IP is derived for per-IP rate limiting (see below). |
 
 ### `ScopeConfig`
 
@@ -128,13 +131,24 @@ See `examples/appointments/server.ts` for a complete working server.
 
 All limits are per-hour. Omit a field to use the default.
 
-| Field                | Type      | Default | Description                                                       |
-| -------------------- | --------- | ------- | ----------------------------------------------------------------- |
-| `userPerHour`        | `number?` | 50      | Max MCP tool calls per user per hour.                             |
-| `ipAuthorizePerHour` | `number?` | 10      | Max OAuth authorize attempts per IP per hour (brute-force guard). |
-| `ipTokenPerHour`     | `number?` | 30      | Max token-endpoint requests per IP per hour.                      |
+| Field                | Type      | Default | Description                                                           |
+| -------------------- | --------- | ------- | --------------------------------------------------------------------- |
+| `userPerHour`        | `number?` | 50      | Max MCP tool calls per user per hour.                                 |
+| `ipAuthorizePerHour` | `number?` | 10      | Max OAuth authorize attempts per IP per hour (brute-force guard).     |
+| `ipTokenPerHour`     | `number?` | 30      | Max requests per IP per hour to `/token`, `/register`, and `/revoke`. |
 
-Rate-limit counters use a non-atomic read-modify-write (KV has no atomic increment) — counts may under-count under high concurrency. For strict enforcement, wrap `createRateLimiter` with a Durable Object counter or equivalent. The per-IP source is `CF-Connecting-IP` (Cloudflare) falling back to the first hop of `X-Forwarded-For`; adopt a different trusted header for non-Cloudflare deployments.
+The `/register` and `/revoke` endpoints share the per-IP `ipTokenPerHour` bucket so that unauthenticated requests can't be used for storage-exhaustion abuse.
+
+Rate-limit counters use a non-atomic read-modify-write (KV has no atomic increment) — counts may under-count under high concurrency. For strict enforcement, wrap `createRateLimiter` with a Durable Object counter or equivalent.
+
+**Trusted client IP.** By default the per-IP source is `CF-Connecting-IP` (authoritative on Cloudflare) falling back to the first hop of `X-Forwarded-For`. `X-Forwarded-For` is client-spoofable unless a trusted proxy overwrites it, so **off-Cloudflare deployments must pass a custom `ipExtractor`** that derives the IP from a source you control — otherwise the brute-force guards can be bypassed by rotating the header:
+
+```ts
+createMcpServer({
+  // ...
+  ipExtractor: (req) => req.headers.get("True-Client-IP") ?? "unknown",
+});
+```
 
 ### `ObservabilityHooks`
 
@@ -185,7 +199,7 @@ If a tool specifies `scope`, the kit checks the caller's token at dispatch time.
 Mutating tools never execute their side effect on the first call. The flow is:
 
 1. **Preview phase** — the MCP client calls the tool. `mutating.preview(input, ctx)` runs, returns a `{ summary, data }` preview. The kit stores it under a single-use confirmation token (5-minute TTL) and returns the token to the client.
-2. **Confirm phase** — the MCP client calls the built-in `confirm_request` tool with the `confirmationToken` from step 1 and a unique `idempotencyKey`. `mutating.execute(data, ctx)` runs, and the result is returned (and cached for 10 minutes under the idempotency key).
+2. **Confirm phase** — the MCP client calls the built-in `confirm_request` tool with the `confirmationToken` from step 1 and a unique `idempotencyKey`. `mutating.execute(data, ctx)` runs, and the result is returned (and cached for 10 minutes under the idempotency key). The confirmation token is bound to the user who previewed it: a confirm from a different user is rejected and does not consume the token.
 
 > **Idempotency — best-effort, not exactly-once:** The kit writes a `"pending"` sentinel before
 > executing, so a concurrent retry that sees it backs off and asks the caller to retry. A retry
@@ -256,7 +270,7 @@ The kit implements OAuth 2.1 with PKCE (S256). A standards-compliant MCP client 
 3. **Authorization** — redirect the user to `GET /authorize` with `response_type=code`, `client_id`, `redirect_uri`, `code_challenge` (S256 PKCE), and optionally `scope`. The built-in identity form collects credentials and calls your `identity.verify`. On success, the server 302-redirects to `redirect_uri?code=<auth_code>`.
 4. **Token exchange** — `POST /token` with `grant_type=authorization_code`, `code`, `client_id`, `redirect_uri`, and `code_verifier`. Returns `{ access_token, refresh_token, expires_in, token_type: "Bearer" }`.
 5. **Call tools** — send MCP JSON-RPC to `POST /mcp` with `Authorization: Bearer <access_token>`.
-6. **Token refresh** — `POST /token` with `grant_type=refresh_token` and `refresh_token`. Issues a new access + refresh token pair (rotation). Note: the prior access token remains valid until its TTL (~1 hour) expires naturally.
+6. **Token refresh** — `POST /token` with `grant_type=refresh_token` and `refresh_token`. Issues a new access + refresh token pair (rotation). Note: the prior access token remains valid until its TTL (~1 hour) expires naturally. **Reuse detection (RFC 9700):** all tokens rotated from one authorization share a family; presenting a refresh token that has already been rotated out revokes the entire family (its active access + refresh tokens), containing a stolen token. Detection is eventually-consistent — like single-use code redemption, a concurrent race isn't fully closed without a strongly-consistent store. **Client implication:** always refresh with the newest refresh token and never retry a refresh using a previously-rotated token — doing so is indistinguishable from theft and will revoke the whole session.
 7. **Revocation** — `POST /revoke` with the access or refresh token to invalidate it immediately (paired token is also revoked).
 
 ## Bring your own storage

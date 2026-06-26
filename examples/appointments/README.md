@@ -15,7 +15,7 @@ in-memory storage and an email + verification-code identity.
 ## Run on Node
 
 `@hono/node-server` and a TypeScript runner (`tsx` or `ts-node`) are dev extras — not bundled
-with `mcp-server-kit`. Install them first:
+with `mcp-auth-kit`. Install them first:
 
 ```bash
 npm install --save-dev @hono/node-server tsx

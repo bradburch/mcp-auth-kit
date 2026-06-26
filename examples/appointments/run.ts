@@ -1,6 +1,6 @@
 // Example entry point — run with: npx tsx examples/appointments/run.ts
 //
-// Requires dev extras (not bundled with mcp-server-kit):
+// Requires dev extras (not bundled with mcp-auth-kit):
 //   npm install --save-dev @hono/node-server tsx
 //
 // @ts-nocheck — @hono/node-server is a dev extra, not listed in the package's

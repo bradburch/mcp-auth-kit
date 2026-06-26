@@ -1,4 +1,4 @@
-# Deploying mcp-server-kit
+# Deploying mcp-auth-kit
 
 `createMcpServer` returns a [Hono](https://hono.dev/) app. Mount it at the **origin root** of your deployment so that `/.well-known/*`, `/authorize`, `/token`, and `POST /mcp` all resolve at the top level — RFC 8414 requires the well-known endpoints at the domain root, and spec-compliant MCP clients POST JSON-RPC to `${baseUrl}/mcp`. Hono has first-party adapters for every major runtime — wrap the app in the adapter for your target and you're done.
 
@@ -12,7 +12,7 @@ Use `createCloudflareKvStorage` to wrap your KV namespace binding.
 
 ```ts
 // src/index.ts
-import { createMcpServer, createCloudflareKvStorage } from "mcp-server-kit";
+import { createMcpServer, createCloudflareKvStorage } from "mcp-auth-kit";
 import { tools } from "./tools.js";
 
 interface Env {
@@ -59,7 +59,7 @@ Use any `KvLike` implementation. The in-memory adapter works for single-process 
 ```ts
 // src/index.ts
 import { serve } from "@hono/node-server";
-import { createMcpServer, createMemoryStorage } from "mcp-server-kit";
+import { createMcpServer, createMemoryStorage } from "mcp-auth-kit";
 import { tools } from "./tools.js";
 
 const app = createMcpServer({
@@ -85,7 +85,7 @@ Hono's `handle` adapter converts a Lambda event to a standard `Request` and back
 ```ts
 // src/handler.ts
 import { handle } from "hono/aws-lambda";
-import { createMcpServer, createMemoryStorage } from "mcp-server-kit";
+import { createMcpServer, createMemoryStorage } from "mcp-auth-kit";
 import { tools } from "./tools.js";
 
 // In production, replace createMemoryStorage() with a DynamoDB or Redis adapter
@@ -110,7 +110,7 @@ Vercel supports Hono via its built-in Node.js runtime. Export `GET` and `POST` n
 ```ts
 // app/api/[[...route]]/route.ts  (Next.js App Router)
 import { handle } from "hono/vercel";
-import { createMcpServer, createMemoryStorage } from "mcp-server-kit";
+import { createMcpServer, createMemoryStorage } from "mcp-auth-kit";
 import { tools } from "@/lib/tools.js";
 
 export const runtime = "edge"; // or "nodejs"
