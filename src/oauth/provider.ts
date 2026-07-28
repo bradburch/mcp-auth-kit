@@ -34,6 +34,7 @@ interface ClientData {
   clientId: string;
   redirectUris: string[];
   clientName?: string;
+  applicationType?: "web" | "native";
   // NOTE: no `scope` field. Scope normalization is server-driven (single-tenant
   // consent model): the server's supported-scope set constrains every grant, not a
   // per-client allowlist. See issueAuthCode → normalizeScopes.
@@ -95,7 +96,8 @@ export interface OAuthProvider {
   registerClient(input: {
     redirectUris: string[];
     clientName?: string;
-  }): Promise<{ clientId: string; redirectUris: string[]; createdAt: number }>;
+    applicationType?: "web" | "native";
+  }): Promise<{ clientId: string; redirectUris: string[]; createdAt: number; applicationType?: "web" | "native" }>;
   issueAuthCode(input: {
     clientId: string;
     redirectUri: string;
@@ -268,12 +270,13 @@ export function createOAuthProvider(config: OAuthProviderConfig): OAuthProvider 
         clientId,
         redirectUris,
         clientName: input.clientName,
+        applicationType: input.applicationType,
         createdAt,
       };
       await storage.put(clientKey(clientId), JSON.stringify(clientData), {
         ttlSeconds: TTL.CLIENT,
       });
-      return { clientId, redirectUris, createdAt };
+      return { clientId, redirectUris, createdAt, applicationType: input.applicationType };
     },
 
     async issueAuthCode(input) {

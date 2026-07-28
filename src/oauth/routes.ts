@@ -222,10 +222,24 @@ export function mountOAuthRoutes(
       );
     }
 
+    // SEP-837 (MCP 2026-07-28 changelog item 8): validate application_type if supplied.
+    const applicationType = body.application_type;
+    if (
+      applicationType !== undefined &&
+      applicationType !== "web" &&
+      applicationType !== "native"
+    ) {
+      return c.json(
+        oauthError("invalid_client_metadata", 'application_type must be "web" or "native"'),
+        400,
+      );
+    }
+
     try {
       const result = await provider.registerClient({
         redirectUris: parsedUris,
         clientName: typeof body.client_name === "string" ? body.client_name : undefined,
+        applicationType: applicationType as "web" | "native" | undefined,
       });
       void fireAudit(hooks, {
         event: "client_registered",
@@ -239,6 +253,7 @@ export function mountOAuthRoutes(
           client_id_issued_at: Math.floor(result.createdAt / 1000),
           redirect_uris: result.redirectUris,
           token_endpoint_auth_method: "none",
+          ...(result.applicationType ? { application_type: result.applicationType } : {}),
         },
         201,
       );
