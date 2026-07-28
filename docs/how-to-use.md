@@ -131,6 +131,15 @@ If you already run your own OAuth UI or SSO flow (SAML, OIDC, an existing login 
 form, not a redirect-based federation client. Compose the lower-level pieces instead, and
 call `provider.issueAuthCode` yourself from wherever your own login flow lands:
 
+> **The route must be `/authorize`, and it must be registered before `mountOAuthRoutes`.**
+> `mountDiscovery` publishes `authorization_endpoint: "<baseUrl>/authorize"` in the AS metadata
+> — that exact path is what every spec-compliant client will request, so your override has to
+> live there, not at some other path. `mountOAuthRoutes` also registers its own
+> `GET /authorize` (which 400s with "No identity provider configured" when `identity` is
+> omitted). Hono dispatches to the **first** matching handler registered for a given method +
+> path, so register yours first to shadow the kit's. (Its `POST /authorize` is still registered
+> after yours but is simply never hit, since your flow never submits to it — harmless, unused.)
+
 ```ts
 import { Hono } from "hono";
 import {
@@ -148,13 +157,11 @@ const provider = createOAuthProvider({ storage, scopes, baseUrl });
 const app = new Hono();
 
 mountDiscovery(app, { baseUrl, scopes });
-// Omit `identity` here — mountOAuthRoutes without it makes /authorize reject with
-// "No identity provider configured". Mount your OWN /authorize route below instead of
-// relying on the kit's login form.
-mountOAuthRoutes(app, { provider, baseUrl });
 
+// Register YOUR /authorize BEFORE mountOAuthRoutes — Hono dispatches to the first handler
+// registered for a given method + path, so this shadows the kit's bundled GET /authorize.
 // Your own login flow lands here after it has already authenticated the user via SSO/SAML/etc.
-app.get("/my-custom-authorize", async (c) => {
+app.get("/authorize", async (c) => {
   const userId = await mySsoMiddleware(c); // however you already authenticate users
   const { code } = await provider.issueAuthCode({
     clientId: c.req.query("client_id")!,
@@ -170,6 +177,11 @@ app.get("/my-custom-authorize", async (c) => {
   if (state) location.searchParams.set("state", state);
   return c.redirect(location.toString(), 302);
 });
+
+// Omit `identity` here — mountOAuthRoutes's own GET /authorize (unreachable, shadowed above)
+// would otherwise reject with "No identity provider configured"; its POST /register, /token,
+// and /revoke are unaffected and still handle the rest of the OAuth flow normally.
+mountOAuthRoutes(app, { provider, baseUrl });
 ```
 
 The MCP transport (`POST /mcp`) and tool registration are unaffected by this — mount them
