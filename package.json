@@ -4,6 +4,23 @@
   "description": "A production-minded MCP server kit: OAuth/PKCE, rate limiting, scope-gated tools, and two-phase confirm — bring your own tools, identity, and storage.",
   "license": "MIT",
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bradburch/mcp-auth-kit.git"
+  },
+  "homepage": "https://github.com/bradburch/mcp-auth-kit#readme",
+  "bugs": {
+    "url": "https://github.com/bradburch/mcp-auth-kit/issues"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "oauth",
+    "oauth2",
+    "pkce",
+    "authorization-server"
+  ],
+  "author": "",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
