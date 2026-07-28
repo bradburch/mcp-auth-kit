@@ -10,7 +10,7 @@ All notable changes to this project are documented here. The format is based on
 
 - **MCP 2026-07-28 authorization compliance:**
   - `iss` parameter on the authorization-code redirect (RFC 9207).
-  - Optional support for [OAuth Client ID Metadata Documents](https://modelcontextprotocol.io/specification/draft/basic/authorization) as an alternative to Dynamic Client Registration, via the new `allowClientIdMetadataDocuments` config option (off by default). DCR remains fully supported — the spec deprecates it with a 12-month minimum window, it does not remove it.
+  - Optional support for [OAuth Client ID Metadata Documents](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization) as an alternative to Dynamic Client Registration, via the new `allowClientIdMetadataDocuments` config option (off by default). DCR remains fully supported — the spec deprecates it with a 12-month minimum window, it does not remove it.
   - `application_type` (`"web" | "native"`) accepted and echoed on `POST /register` (SEP-837).
   - `scope` attribute on the 401 `WWW-Authenticate` challenge, hinting the default scopes.
 - Not yet adopted: the MCP TypeScript SDK v2 beta (`@modelcontextprotocol/server`/`@modelcontextprotocol/client`) implementing the non-authorization parts of the 2026-07-28 spec (stateless handshake, `resultType`, `server/discover`, etc.) — see the plan doc for rationale.

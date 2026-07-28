@@ -14,7 +14,7 @@
 - **Out of scope for this plan** (see the "Explicitly Out of Scope" section at the end — do not implement these here):
   - The TypeScript SDK v2 beta (`@modelcontextprotocol/server`/`@modelcontextprotocol/client`) migration — it's a beta package with a different name, not a drop-in upgrade.
   - Any change to `src/transport.ts`'s core request handling, `src/two-phase.ts`, or `src/tools/registry.ts` beyond the one `WWW-Authenticate` header tweak in Task 5 — the stateless-session removal, `resultType` field, `server/discover` RPC, and JSON-RPC error-code renumbering are all mechanics `@modelcontextprotocol/sdk`'s `McpServer` / `WebStandardStreamableHTTPServerTransport` already own; this kit only consumes those classes.
-  - Client-side requirements (`iss` validation by the *client*, credentials keyed by issuer) — this kit only ever acts as the OAuth **authorization server** and **resource server**, never as a client.
+  - Client-side requirements (`iss` validation by the _client_, credentials keyed by issuer) — this kit only ever acts as the OAuth **authorization server** and **resource server**, never as a client.
 - Node >=22 (existing `engines` floor), ESM (`"type": "module"`), strict TypeScript (`tsconfig.json`).
 - Every new/changed file follows existing conventions: file-header comment block, `KvLike` for all persistence (no direct fetch to storage backends), errors surfaced as `Error` with a message routes.ts pattern-matches on (see the `if (msg.includes(...))` blocks in `routes.ts`'s `/token` handler) — don't introduce a different error-signaling convention.
 - Any new outbound network call (Task 2/3's CIMD fetch) must be: HTTPS-only, time-bounded, response-size-capped, and guarded against the obvious SSRF targets (loopback/link-local/RFC1918 literals) — mirroring the existing security posture (`body-limit.ts` caps request bodies, `rate-limit.ts` guards abuse). It must default to **off**, since it's an outbound-request surface operators need to opt into.
@@ -24,31 +24,33 @@
 
 ## File Structure
 
-| File | Responsibility |
-|---|---|
-| `src/oauth/routes.ts` | *Modify.* Add `iss` to the `/authorize` redirect (Task 1); accept/validate/echo `application_type` on `/register` (Task 4). |
-| `src/oauth/cimd.ts` | *Create.* Fetch + validate a Client ID Metadata Document from an `https://` `client_id` URL. Pure function, no storage access (Task 2). |
-| `src/oauth/provider.ts` | *Modify.* Resolve a client's allowed redirect URIs from either a stored (DCR/pre-registered) record or, if enabled, a cached CIMD fetch; store `application_type` on registration (Tasks 3, 4). |
-| `src/oauth/discovery.ts` | *Modify.* Advertise `client_id_metadata_document_supported` in AS metadata (Task 3). |
-| `src/storage/keys.ts` | *Modify.* Add `cimdKey` for the CIMD response cache (Task 3). |
-| `src/config.ts` | *Modify.* Add `allowClientIdMetadataDocuments` to `McpServerConfig` (Task 3). |
-| `src/server.ts` | *Modify.* Wire the new config option to `createOAuthProvider` and `mountDiscovery` (Task 3). |
-| `src/transport.ts` | *Modify.* Add a `scope` attribute to the 401 `WWW-Authenticate` challenge (Task 5). |
-| `test/oauth/cimd.test.ts` | *Create.* Unit tests for the CIMD fetch/validate helper. |
-| `test/oauth/routes.test.ts` | *Modify.* Tests for `iss` and `application_type`. |
-| `test/oauth/provider.test.ts` | *Modify.* Tests for CIMD-backed client resolution. |
-| `test/transport.test.ts` | *Create.* Tests for the `WWW-Authenticate` scope hint. |
-| `README.md`, `CHANGELOG.md`, `docs/how-to-use.md` | *Modify.* Document the new config option and record the change (Task 6). |
+| File                                              | Responsibility                                                                                                                                                                                  |
+| ------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `src/oauth/routes.ts`                             | _Modify._ Add `iss` to the `/authorize` redirect (Task 1); accept/validate/echo `application_type` on `/register` (Task 4).                                                                     |
+| `src/oauth/cimd.ts`                               | _Create._ Fetch + validate a Client ID Metadata Document from an `https://` `client_id` URL. Pure function, no storage access (Task 2).                                                         |
+| `src/oauth/provider.ts`                           | _Modify._ Resolve a client's allowed redirect URIs from either a stored (DCR/pre-registered) record or, if enabled, a cached CIMD fetch; store `application_type` on registration (Tasks 3, 4). |
+| `src/oauth/discovery.ts`                          | _Modify._ Advertise `client_id_metadata_document_supported` in AS metadata (Task 3).                                                                                                            |
+| `src/storage/keys.ts`                             | _Modify._ Add `cimdKey` for the CIMD response cache (Task 3).                                                                                                                                   |
+| `src/config.ts`                                   | _Modify._ Add `allowClientIdMetadataDocuments` to `McpServerConfig` (Task 3).                                                                                                                   |
+| `src/server.ts`                                   | _Modify._ Wire the new config option to `createOAuthProvider` and `mountDiscovery` (Task 3).                                                                                                    |
+| `src/transport.ts`                                | _Modify._ Add a `scope` attribute to the 401 `WWW-Authenticate` challenge (Task 5).                                                                                                             |
+| `test/oauth/cimd.test.ts`                         | _Create._ Unit tests for the CIMD fetch/validate helper.                                                                                                                                        |
+| `test/oauth/routes.test.ts`                       | _Modify._ Tests for `iss` and `application_type`.                                                                                                                                               |
+| `test/oauth/provider.test.ts`                     | _Modify._ Tests for CIMD-backed client resolution.                                                                                                                                              |
+| `test/transport.test.ts`                          | _Create._ Tests for the `WWW-Authenticate` scope hint.                                                                                                                                          |
+| `README.md`, `CHANGELOG.md`, `docs/how-to-use.md` | _Modify._ Document the new config option and record the change (Task 6).                                                                                                                        |
 
 ---
 
 ### Task 1: RFC 9207 `iss` parameter on the authorization redirect
 
 **Files:**
+
 - Modify: `src/oauth/routes.ts:156-159` (destructure), `src/oauth/routes.ts:376-381` (redirect)
 - Test: `test/oauth/routes.test.ts`
 
 **Interfaces:**
+
 - Consumes: `OAuthRouteDeps.baseUrl` (already declared in the interface at `routes.ts:122`, just not currently destructured/used).
 - Produces: no new exports — internal behavior change to the `POST /authorize` redirect only.
 
@@ -122,15 +124,15 @@ export function mountOAuthRoutes(
 Then in the `POST /authorize` success path (around line 376-381):
 
 ```typescript
-      // 302 redirect back to client with code (and state if provided).
-      const location = new URL(redirectUri);
-      location.searchParams.set("code", code);
-      if (state) location.searchParams.set("state", state);
-      // RFC 9207 (MCP 2026-07-28 changelog item 7): echo the issuer so clients can
-      // detect a mix-up attack before redeeming the code.
-      location.searchParams.set("iss", baseUrl);
+// 302 redirect back to client with code (and state if provided).
+const location = new URL(redirectUri);
+location.searchParams.set("code", code);
+if (state) location.searchParams.set("state", state);
+// RFC 9207 (MCP 2026-07-28 changelog item 7): echo the issuer so clients can
+// detect a mix-up attack before redeeming the code.
+location.searchParams.set("iss", baseUrl);
 
-      return c.redirect(location.toString(), 302);
+return c.redirect(location.toString(), 302);
 ```
 
 - [ ] **Step 4: Run test to verify it passes**
@@ -150,10 +152,12 @@ git commit -m "feat(oauth): echo iss on the authorization redirect (RFC 9207)"
 ### Task 2: Client ID Metadata Document fetch + validation helper
 
 **Files:**
+
 - Create: `src/oauth/cimd.ts`
 - Test: `test/oauth/cimd.test.ts`
 
 **Interfaces:**
+
 - Produces: `fetchClientIdMetadata(clientIdUrl: string): Promise<ClientIdMetadata | null>` and `interface ClientIdMetadata { clientId: string; clientName?: string; redirectUris: string[] }` — Task 3 imports both.
 
 - [ ] **Step 1: Write the failing tests**
@@ -332,9 +336,7 @@ async function readCappedText(res: Response, maxBytes: number): Promise<string |
  * validation failure — an invalid/unreachable document means "not a CIMD client," not a
  * server error, so callers fall back to other registration mechanisms.
  */
-export async function fetchClientIdMetadata(
-  clientIdUrl: string,
-): Promise<ClientIdMetadata | null> {
+export async function fetchClientIdMetadata(clientIdUrl: string): Promise<ClientIdMetadata | null> {
   let url: URL;
   try {
     url = new URL(clientIdUrl);
@@ -399,6 +401,7 @@ git commit -m "feat(oauth): add Client ID Metadata Document fetch/validate helpe
 ### Task 3: Wire CIMD into the provider + advertise support in discovery
 
 **Files:**
+
 - Modify: `src/oauth/provider.ts`
 - Modify: `src/oauth/discovery.ts`
 - Modify: `src/storage/keys.ts`
@@ -407,6 +410,7 @@ git commit -m "feat(oauth): add Client ID Metadata Document fetch/validate helpe
 - Test: `test/oauth/provider.test.ts`, `test/oauth/routes.test.ts`
 
 **Interfaces:**
+
 - Consumes: `fetchClientIdMetadata` from `./cimd.js` (Task 2).
 - Produces: `OAuthProviderConfig.allowClientIdMetadataDocuments?: boolean`; `McpServerConfig.allowClientIdMetadataDocuments?: boolean`; `DiscoveryDeps.clientIdMetadataDocumentsSupported?: boolean`.
 
@@ -430,10 +434,9 @@ describe("Client ID Metadata Document resolution", () => {
       "fetch",
       vi.fn(
         async () =>
-          new Response(
-            JSON.stringify({ client_id: cimdClientId, redirect_uris: redirectUris }),
-            { status: 200 },
-          ),
+          new Response(JSON.stringify({ client_id: cimdClientId, redirect_uris: redirectUris }), {
+            status: 200,
+          }),
       ),
     );
   }
@@ -578,7 +581,7 @@ export interface OAuthProviderConfig {
    * (MCP 2026-07-28, deprecating Dynamic Client Registration). Off by default —
    * enabling it makes this server fetch an operator-uncontrolled URL during
    * authorization; only turn it on once you're comfortable with that outbound
-   * request surface. See `docs/oauth.md`.
+   * request surface.
    */
   allowClientIdMetadataDocuments?: boolean;
 }
@@ -587,37 +590,37 @@ export interface OAuthProviderConfig {
 Update the config destructure (~line 127):
 
 ```typescript
-  const { storage, scopes, baseUrl, allowClientIdMetadataDocuments = false } = config;
+const { storage, scopes, baseUrl, allowClientIdMetadataDocuments = false } = config;
 ```
 
 Add a helper next to `assertResource` (~after line 151):
 
 ```typescript
-  /**
-   * Resolve the redirect URIs a client_id is allowed to use — from a stored
-   * (pre-registered / DCR) record first, falling back to a cached Client ID Metadata
-   * Document fetch when `allowClientIdMetadataDocuments` is enabled and the client_id
-   * looks like an https URL not already registered.
-   */
-  async function resolveClientRedirectUris(clientId: string): Promise<string[] | null> {
-    const raw = await storage.get(clientKey(clientId));
-    if (raw) return (JSON.parse(raw) as ClientData).redirectUris;
+/**
+ * Resolve the redirect URIs a client_id is allowed to use — from a stored
+ * (pre-registered / DCR) record first, falling back to a cached Client ID Metadata
+ * Document fetch when `allowClientIdMetadataDocuments` is enabled and the client_id
+ * looks like an https URL not already registered.
+ */
+async function resolveClientRedirectUris(clientId: string): Promise<string[] | null> {
+  const raw = await storage.get(clientKey(clientId));
+  if (raw) return (JSON.parse(raw) as ClientData).redirectUris;
 
-    if (!allowClientIdMetadataDocuments || !clientId.startsWith("https://")) return null;
+  if (!allowClientIdMetadataDocuments || !clientId.startsWith("https://")) return null;
 
-    const cacheKey = cimdKey(await sha256Hex(clientId));
-    const cached = await storage.get(cacheKey);
-    if (cached !== null) {
-      // Empty string is the cached "fetched but invalid/unreachable" sentinel.
-      return cached === "" ? null : (JSON.parse(cached) as string[]);
-    }
-
-    const doc = await fetchClientIdMetadata(clientId);
-    await storage.put(cacheKey, doc ? JSON.stringify(doc.redirectUris) : "", {
-      ttlSeconds: TTL.CIMD_CACHE,
-    });
-    return doc?.redirectUris ?? null;
+  const cacheKey = cimdKey(await sha256Hex(clientId));
+  const cached = await storage.get(cacheKey);
+  if (cached !== null) {
+    // Empty string is the cached "fetched but invalid/unreachable" sentinel.
+    return cached === "" ? null : (JSON.parse(cached) as string[]);
   }
+
+  const doc = await fetchClientIdMetadata(clientId);
+  await storage.put(cacheKey, doc ? JSON.stringify(doc.redirectUris) : "", {
+    ttlSeconds: TTL.CIMD_CACHE,
+  });
+  return doc?.redirectUris ?? null;
+}
 ```
 
 Replace `validateClientRedirect` (~line 273-279):
@@ -633,15 +636,15 @@ Replace `validateClientRedirect` (~line 273-279):
 Replace the client lookup at the top of `issueAuthCode` (~line 246-255):
 
 ```typescript
-      const redirectUris = await resolveClientRedirectUris(input.clientId);
-      if (!redirectUris) {
-        throw new Error("Unknown client");
-      }
+const redirectUris = await resolveClientRedirectUris(input.clientId);
+if (!redirectUris) {
+  throw new Error("Unknown client");
+}
 
-      // RFC 6749 §3.1.2.3: the redirect_uri must match one the client registered.
-      if (!redirectUris.includes(input.redirectUri)) {
-        throw new Error("Redirect URI mismatch");
-      }
+// RFC 6749 §3.1.2.3: the redirect_uri must match one the client registered.
+if (!redirectUris.includes(input.redirectUri)) {
+  throw new Error("Redirect URI mismatch");
+}
 ```
 
 (This replaces the old `const raw = await storage.get(clientKey(input.clientId)); ... const client = JSON.parse(raw) as ClientData; if (!client.redirectUris.includes(...))` block — `client` is no longer referenced elsewhere in `issueAuthCode`.)
@@ -693,20 +696,20 @@ In `src/config.ts`, add to `McpServerConfig` (~end of interface):
 In `src/server.ts`, thread it through:
 
 ```typescript
-  const provider = createOAuthProvider({
-    storage: config.storage,
-    scopes: config.scopes,
-    baseUrl: config.baseUrl,
-    allowClientIdMetadataDocuments: config.allowClientIdMetadataDocuments,
-  });
+const provider = createOAuthProvider({
+  storage: config.storage,
+  scopes: config.scopes,
+  baseUrl: config.baseUrl,
+  allowClientIdMetadataDocuments: config.allowClientIdMetadataDocuments,
+});
 
-  // ...
+// ...
 
-  mountDiscovery(app, {
-    baseUrl: config.baseUrl,
-    scopes: config.scopes,
-    clientIdMetadataDocumentsSupported: config.allowClientIdMetadataDocuments,
-  });
+mountDiscovery(app, {
+  baseUrl: config.baseUrl,
+  scopes: config.scopes,
+  clientIdMetadataDocumentsSupported: config.allowClientIdMetadataDocuments,
+});
 ```
 
 - [ ] **Step 4: Run tests to verify they pass**
@@ -726,11 +729,13 @@ git commit -m "feat(oauth): support Client ID Metadata Documents as a DCR altern
 ### Task 4: `application_type` on Dynamic Client Registration
 
 **Files:**
+
 - Modify: `src/oauth/provider.ts`
 - Modify: `src/oauth/routes.ts`
 - Test: `test/oauth/routes.test.ts`
 
 **Interfaces:**
+
 - Consumes: nothing new.
 - Produces: `OAuthProvider.registerClient` input/output gains `applicationType?: "web" | "native"`.
 
@@ -830,18 +835,14 @@ Update the implementation (~line 226-240):
 In `src/oauth/routes.ts`, in the `POST /register` handler, after the existing redirect-URI validation block (~line 223) and before the `try { const result = await provider.registerClient(...)` call:
 
 ```typescript
-    // SEP-837 (MCP 2026-07-28 changelog item 8): validate application_type if supplied.
-    const applicationType = body.application_type;
-    if (
-      applicationType !== undefined &&
-      applicationType !== "web" &&
-      applicationType !== "native"
-    ) {
-      return c.json(
-        oauthError("invalid_client_metadata", 'application_type must be "web" or "native"'),
-        400,
-      );
-    }
+// SEP-837 (MCP 2026-07-28 changelog item 8): validate application_type if supplied.
+const applicationType = body.application_type;
+if (applicationType !== undefined && applicationType !== "web" && applicationType !== "native") {
+  return c.json(
+    oauthError("invalid_client_metadata", 'application_type must be "web" or "native"'),
+    400,
+  );
+}
 ```
 
 Update the `provider.registerClient` call and the 201 response body:
@@ -888,11 +889,13 @@ git commit -m "feat(oauth): accept and validate application_type on DCR (SEP-837
 ### Task 5: `scope` hint on the 401 `WWW-Authenticate` challenge
 
 **Files:**
+
 - Modify: `src/transport.ts`
 - Modify: `src/server.ts`
 - Test: `test/transport.test.ts` (new)
 
 **Interfaces:**
+
 - Consumes: `McpServerConfig.scopes` (already exists).
 - Produces: `McpRequestDeps` gains `defaultScopes: string[]`.
 
@@ -913,10 +916,7 @@ describe("POST /mcp — 401 WWW-Authenticate", () => {
     const app = createMcpServer({
       baseUrl,
       storage: createMemoryStorage(),
-      scopes: [
-        { name: "account:read", default: true },
-        { name: "account:write" },
-      ],
+      scopes: [{ name: "account:read", default: true }, { name: "account:write" }],
       tools: [],
     });
 
@@ -928,7 +928,9 @@ describe("POST /mcp — 401 WWW-Authenticate", () => {
 
     expect(res.status).toBe(401);
     const header = res.headers.get("WWW-Authenticate")!;
-    expect(header).toContain('resource_metadata="https://example.test/.well-known/oauth-protected-resource"');
+    expect(header).toContain(
+      'resource_metadata="https://example.test/.well-known/oauth-protected-resource"',
+    );
     expect(header).toContain('scope="account:read"');
   });
 
@@ -979,37 +981,36 @@ export interface McpRequestDeps {
 Update the `unauthorized` builder (~line 57-64):
 
 ```typescript
-  // RFC 9728: tell clients where to discover OAuth endpoints on a 401.
-  const resourceMetadataUrl = `${deps.baseUrl}/.well-known/oauth-protected-resource`;
-  // RFC 6750 §3 / MCP 2026-07-28 Authorization spec: hint the scopes needed so
-  // clients don't have to guess before their first authorization attempt.
-  const scopeAttr =
-    deps.defaultScopes.length > 0 ? `, scope="${deps.defaultScopes.join(" ")}"` : "";
-  const wwwAuthenticate = `Bearer resource_metadata="${resourceMetadataUrl}"${scopeAttr}`;
-  const unauthorized = () =>
-    Response.json(jsonRpcError(JSON_RPC_ERROR.AUTH_REQUIRED, "Authentication required"), {
-      status: 401,
-      headers: { "WWW-Authenticate": wwwAuthenticate },
-    });
+// RFC 9728: tell clients where to discover OAuth endpoints on a 401.
+const resourceMetadataUrl = `${deps.baseUrl}/.well-known/oauth-protected-resource`;
+// RFC 6750 §3 / MCP 2026-07-28 Authorization spec: hint the scopes needed so
+// clients don't have to guess before their first authorization attempt.
+const scopeAttr = deps.defaultScopes.length > 0 ? `, scope="${deps.defaultScopes.join(" ")}"` : "";
+const wwwAuthenticate = `Bearer resource_metadata="${resourceMetadataUrl}"${scopeAttr}`;
+const unauthorized = () =>
+  Response.json(jsonRpcError(JSON_RPC_ERROR.AUTH_REQUIRED, "Authentication required"), {
+    status: 401,
+    headers: { "WWW-Authenticate": wwwAuthenticate },
+  });
 ```
 
 In `src/server.ts`, pass it through in the `/mcp` handler:
 
 ```typescript
-  app.post("/mcp", (c) =>
-    handleMcpRequest(c.req.raw, {
-      provider,
-      rateLimiter,
-      storage: config.storage,
-      tools: config.tools,
-      baseUrl: config.baseUrl,
-      serverName: DEFAULT_SERVER_NAME,
-      serverVersion: DEFAULT_SERVER_VERSION,
-      env: undefined,
-      hooks,
-      defaultScopes: config.scopes.filter((s) => s.default).map((s) => s.name),
-    }),
-  );
+app.post("/mcp", (c) =>
+  handleMcpRequest(c.req.raw, {
+    provider,
+    rateLimiter,
+    storage: config.storage,
+    tools: config.tools,
+    baseUrl: config.baseUrl,
+    serverName: DEFAULT_SERVER_NAME,
+    serverVersion: DEFAULT_SERVER_VERSION,
+    env: undefined,
+    hooks,
+    defaultScopes: config.scopes.filter((s) => s.default).map((s) => s.name),
+  }),
+);
 ```
 
 - [ ] **Step 4: Run test to verify it passes**
@@ -1029,6 +1030,7 @@ git commit -m "feat(oauth): hint required scopes in the 401 WWW-Authenticate cha
 ### Task 6: Documentation
 
 **Files:**
+
 - Modify: `README.md`
 - Modify: `CHANGELOG.md`
 - Modify: `docs/how-to-use.md`
@@ -1138,11 +1140,13 @@ The point of this step is a client with no shared code or state with the server 
 another vitest mock. Use the exact `curl` sequence in `docs/how-to-use.md` section 7
 (steps a-e: PKCE generation, register, authorize, token exchange, `tools/call`), run from a
 plain shell, to confirm:
+
 - the `iss` parameter is present on the step-(c) redirect and equals the server's `baseUrl`
   (Task 1)
 - the step-(e) tool call succeeds and returns the expected content
 
 Then additionally exercise what Tasks 3-5 added, from that same external shell:
+
 - **CIMD (Task 3):** re-run step (b)-(e) using a `client_id` that is an `https://` URL
   instead of registering — this requires a second, tiny process serving a static
   `{ "client_id": "<url>", "redirect_uris": [...] }` JSON document (e.g.
@@ -1156,7 +1160,7 @@ Then additionally exercise what Tasks 3-5 added, from that same external shell:
   body and confirm the 201 response echoes it; retry with `"application_type": "bogus"` and
   confirm a 400.
 - **`WWW-Authenticate` scope hint (Task 5):** `curl -i -X POST http://localhost:3000/mcp
-  -H 'content-type: application/json' -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'`
+-H 'content-type: application/json' -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'`
   with no `Authorization` header, and confirm the `WWW-Authenticate` response header
   includes a `scope="..."` attribute.
 
@@ -1166,7 +1170,7 @@ Dispatch a fresh subagent (general-purpose, no special tools beyond Bash/curl) w
 the server's base URL, the exact checks from Step 2 above, and instructions to run them
 independently and report PASS/FAIL per check with the actual response bodies/headers —
 not to trust this plan's predictions. This agent must not read this repo's source or tests
-first; it verifies the server's *observable* behavior as an outside HTTP client would, the
+first; it verifies the server's _observable_ behavior as an outside HTTP client would, the
 same way a real MCP client integration test would. Report back pass/fail per check.
 
 - [ ] **Step 4: Tear down**
@@ -1186,7 +1190,7 @@ re-review, done) before the final whole-branch review runs.
 ## Explicitly Out of Scope (tracked, not built here)
 
 - **TypeScript SDK v2 migration.** The 2026-07-28 spec's wire-protocol changes (removing the `initialize` handshake, protocol version in `_meta`, the `server/discover` RPC, `subscriptions/listen` replacing SSE resumability, `resultType`, JSON-RPC error-code renumbering) are implemented by `@modelcontextprotocol/server`/`@modelcontextprotocol/client` — new, beta-only packages (`v2`, per the [SDK beta announcement](https://blog.modelcontextprotocol.io/posts/sdk-betas-2026-07-28/)) that replace `@modelcontextprotocol/sdk` entirely, require Node 20+/ESM-only, and change `.tool()` to `registerTool()` plus a Hono adapter. This kit already runs fully stateless (`sessionIdGenerator: undefined` in `src/transport.ts`), so the session-removal change costs nothing once adopted — but migrating a "production-minded" kit onto a beta dependency is a separate, higher-risk effort that should wait for GA. Revisit when `@modelcontextprotocol/server` ships a stable `1.0.0`.
-- **`WWW-Authenticate: error="insufficient_scope"` step-up flow (403).** The spec's Scope Challenge Handling section describes a runtime 403 for a token with insufficient scope. This kit currently enforces scope by silently omitting ungranted tools from `tools/list` rather than erroring on `tools/call` — a different, already-working design (the client never sees a tool it can't call). Adding a 403 flow changes that design decision and is a separate feature, not a compliance gap in the *current* design; revisit only if adopters ask for step-up authorization.
+- **`WWW-Authenticate: error="insufficient_scope"` step-up flow (403).** The spec's Scope Challenge Handling section describes a runtime 403 for a token with insufficient scope. This kit currently enforces scope by silently omitting ungranted tools from `tools/list` rather than erroring on `tools/call` — a different, already-working design (the client never sees a tool it can't call). Adding a 403 flow changes that design decision and is a separate feature, not a compliance gap in the _current_ design; revisit only if adopters ask for step-up authorization.
 - **Client-side requirements** (`iss` validation, credentials keyed by issuer, `application_type` defaulting on the client) — this kit is the authorization server / resource server, never an MCP client.
 - **JSON-RPC error-code renumbering** (changelog item 12) — this kit's custom codes (`METHOD_NOT_ALLOWED: -32000`, `AUTH_REQUIRED: -32001`, `RATE_LIMITED: -32002`) fall in the `-32000`–`-32019` range the new allocation policy leaves implementation-defined/grandfathered; they don't collide with the newly-reserved `-32020`–`-32099` MCP range. No change needed — verified during Task 6, not a separate task.
 

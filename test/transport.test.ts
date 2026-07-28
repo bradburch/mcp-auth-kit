@@ -10,10 +10,7 @@ describe("POST /mcp — 401 WWW-Authenticate", () => {
     const app = createMcpServer({
       baseUrl,
       storage: createMemoryStorage(),
-      scopes: [
-        { name: "account:read", default: true },
-        { name: "account:write" },
-      ],
+      scopes: [{ name: "account:read", default: true }, { name: "account:write" }],
       tools: [],
     });
 
@@ -25,7 +22,9 @@ describe("POST /mcp — 401 WWW-Authenticate", () => {
 
     expect(res.status).toBe(401);
     const header = res.headers.get("WWW-Authenticate")!;
-    expect(header).toContain('resource_metadata="https://example.test/.well-known/oauth-protected-resource"');
+    expect(header).toContain(
+      'resource_metadata="https://example.test/.well-known/oauth-protected-resource"',
+    );
     expect(header).toContain('scope="account:read"');
   });
 
