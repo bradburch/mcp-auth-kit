@@ -22,12 +22,39 @@ export const JSON_RPC_ERROR = {
   AUTH_REQUIRED: -32001,
   RATE_LIMITED: -32002,
   ORIGIN_NOT_ALLOWED: -32003,
+  HEADER_MISMATCH: -32020, // matches the MCP 2026-07-28 error-code allocation policy
   INTERNAL: -32603,
 } as const;
 
 /** Build a JSON-RPC error envelope (id: null — no request id at the transport boundary). */
 export function jsonRpcError(code: number, message: string) {
   return { jsonrpc: "2.0" as const, id: null, error: { code, message } };
+}
+
+/**
+ * MCP 2026-07-28 streamable-http spec: reject a request where `Mcp-Method` (and, for
+ * `tools/call`, `Mcp-Name`) don't match the JSON-RPC body — guards against an edge proxy
+ * routing/authorizing on the header while the server executes on the body. A request with
+ * NO such headers (older clients) is unaffected; only a present-but-mismatched header is
+ * rejected. An unparseable body is not rejected here — the SDK transport handles that.
+ */
+function headerMismatch(req: Request, requestBody: string): boolean {
+  const mcpMethod = req.headers.get("Mcp-Method");
+  const mcpName = req.headers.get("Mcp-Name");
+  if (mcpMethod === null && mcpName === null) return false;
+
+  let parsed: { method?: unknown; params?: { name?: unknown } };
+  try {
+    parsed = JSON.parse(requestBody);
+  } catch {
+    return false; // let the SDK's own JSON-RPC parse-error handling take over
+  }
+
+  if (mcpMethod !== null && parsed.method !== mcpMethod) return true;
+  if (mcpName !== null && parsed.method === "tools/call" && parsed.params?.name !== mcpName) {
+    return true;
+  }
+  return false;
 }
 
 export interface McpRequestDeps {
@@ -69,6 +96,16 @@ export async function handleMcpRequest(req: Request, deps: McpRequestDeps): Prom
   const capped = await readCappedBody(req);
   if (capped instanceof Response) return capped;
   const requestBody = capped;
+
+  if (headerMismatch(req, requestBody)) {
+    return Response.json(
+      jsonRpcError(
+        JSON_RPC_ERROR.HEADER_MISMATCH,
+        "Mcp-Method/Mcp-Name header does not match request body",
+      ),
+      { status: 400 },
+    );
+  }
 
   // RFC 9728: tell clients where to discover OAuth endpoints on a 401.
   const resourceMetadataUrl = `${deps.baseUrl}/.well-known/oauth-protected-resource`;
