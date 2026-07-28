@@ -168,6 +168,36 @@ it("defaults client_id_metadata_document_supported to false", async () => {
   expect((await res.json()).client_id_metadata_document_supported).toBe(false);
 });
 
+describe("discovery metadata — 2026-07-28 fixes", () => {
+  it("advertises authorization_response_iss_parameter_supported", async () => {
+    const res = await appUnderTest().request("/.well-known/oauth-authorization-server");
+    const body = await res.json();
+    expect(body.authorization_response_iss_parameter_supported).toBe(true);
+  });
+
+  it("does not include a non-standard resource field in AS metadata", async () => {
+    const res = await appUnderTest().request("/.well-known/oauth-authorization-server");
+    const body = await res.json();
+    expect(body.resource).toBeUndefined();
+  });
+
+  it("includes scopes_supported in Protected Resource Metadata", async () => {
+    const res = await appUnderTest().request("/.well-known/oauth-protected-resource");
+    const body = await res.json();
+    expect(body.scopes_supported).toEqual(["account:read"]);
+  });
+
+  it("serves identical Protected Resource Metadata at the /mcp sub-path", async () => {
+    const root = await (
+      await appUnderTest().request("/.well-known/oauth-protected-resource")
+    ).json();
+    const subPath = await (
+      await appUnderTest().request("/.well-known/oauth-protected-resource/mcp")
+    ).json();
+    expect(subPath).toEqual(root);
+  });
+});
+
 describe("POST /register — application_type", () => {
   it("accepts and echoes a valid application_type", async () => {
     const res = await appUnderTest().request("/register", {
