@@ -280,3 +280,69 @@ describe("fetchClientIdMetadata", () => {
     expect(result).toBeNull();
   });
 });
+
+describe("fetchClientIdMetadata — Cache-Control", () => {
+  it("returns the response's max-age when present", async () => {
+    const clientId = "https://app.example.com/oauth/client.json";
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({ client_id: clientId, redirect_uris: ["https://app.example.com/cb"] }),
+            { status: 200, headers: { "cache-control": "max-age=120" } },
+          ),
+      ),
+    );
+    const result = await fetchClientIdMetadata(clientId);
+    expect(result?.maxAgeSeconds).toBe(120);
+  });
+
+  it("clamps an excessive max-age to the upper bound", async () => {
+    const clientId = "https://app.example.com/oauth/client.json";
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({ client_id: clientId, redirect_uris: ["https://app.example.com/cb"] }),
+            { status: 200, headers: { "cache-control": "max-age=999999999" } },
+          ),
+      ),
+    );
+    const result = await fetchClientIdMetadata(clientId);
+    expect(result?.maxAgeSeconds).toBeLessThanOrEqual(24 * 60 * 60);
+  });
+
+  it("clamps a tiny/zero max-age to the lower bound", async () => {
+    const clientId = "https://app.example.com/oauth/client.json";
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({ client_id: clientId, redirect_uris: ["https://app.example.com/cb"] }),
+            { status: 200, headers: { "cache-control": "max-age=0" } },
+          ),
+      ),
+    );
+    const result = await fetchClientIdMetadata(clientId);
+    expect(result?.maxAgeSeconds).toBeGreaterThanOrEqual(60);
+  });
+
+  it("defaults to undefined (caller uses its own default) when no Cache-Control is sent", async () => {
+    const clientId = "https://app.example.com/oauth/client.json";
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({ client_id: clientId, redirect_uris: ["https://app.example.com/cb"] }),
+            { status: 200 },
+          ),
+      ),
+    );
+    const result = await fetchClientIdMetadata(clientId);
+    expect(result?.maxAgeSeconds).toBeUndefined();
+  });
+});

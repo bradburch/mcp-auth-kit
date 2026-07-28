@@ -10,11 +10,19 @@ const MAX_DOCUMENT_BYTES = 16 * 1024;
 /** Abort a metadata fetch that hangs (e.g. a slow-loris endpoint). */
 const FETCH_TIMEOUT_MS = 3000;
 
+/** Bounds for a CIMD document's own Cache-Control max-age, so a document can't force an
+ *  unbounded cache lifetime (stale redirect_uris survive too long) or an effectively-zero
+ *  one (reopening the repeated-outbound-fetch/SSRF-adjacent concern the cache exists to bound). */
+const MIN_CACHE_SECONDS = 60;
+const MAX_CACHE_SECONDS = 24 * 60 * 60;
+
 /** A validated Client ID Metadata Document, narrowed to the fields MCP needs. */
 export interface ClientIdMetadata {
   clientId: string;
   clientName?: string;
   redirectUris: string[];
+  /** Clamped `max-age` from the response's Cache-Control header, if present. */
+  maxAgeSeconds?: number;
 }
 
 /**
@@ -77,6 +85,15 @@ function isBlockedHost(hostname: string): boolean {
   if (isPrivateIPv4(h)) return true;
 
   return false;
+}
+
+/** Parse and clamp `max-age` from a Cache-Control header, if present and well-formed. */
+function parseMaxAge(cacheControl: string | null): number | undefined {
+  if (!cacheControl) return undefined;
+  const match = /max-age=(\d+)/i.exec(cacheControl);
+  if (!match) return undefined;
+  const raw = Number.parseInt(match[1], 10);
+  return Math.min(Math.max(raw, MIN_CACHE_SECONDS), MAX_CACHE_SECONDS);
 }
 
 /** Read a Response body with a byte cap enforced while streaming. Returns null if exceeded or aborted. */
@@ -154,6 +171,8 @@ export async function fetchClientIdMetadata(clientIdUrl: string): Promise<Client
     }
     if (!res.ok) return null;
 
+    const maxAgeSeconds = parseMaxAge(res.headers.get("cache-control"));
+
     const text = await readCappedText(res, MAX_DOCUMENT_BYTES, controller.signal);
     if (text === null) return null;
 
@@ -181,6 +200,7 @@ export async function fetchClientIdMetadata(clientIdUrl: string): Promise<Client
       clientId: clientIdUrl,
       clientName: typeof d.client_name === "string" ? d.client_name : undefined,
       redirectUris,
+      maxAgeSeconds,
     };
   } finally {
     clearTimeout(timeout);

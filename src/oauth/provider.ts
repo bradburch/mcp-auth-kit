@@ -191,7 +191,7 @@ export function createOAuthProvider(config: OAuthProviderConfig): OAuthProvider 
     // naturally an empty array, and [].includes(anything) is false, so no special-case
     // branch is needed to read it back.
     await storage.put(cacheKey, doc ? JSON.stringify(doc.redirectUris) : "[]", {
-      ttlSeconds: TTL.CIMD_CACHE,
+      ttlSeconds: doc?.maxAgeSeconds ?? TTL.CIMD_CACHE,
     });
     return doc?.redirectUris ?? null;
   }
