@@ -38,7 +38,7 @@
 | `test/oauth/routes.test.ts` | *Modify.* Tests for `iss` and `application_type`. |
 | `test/oauth/provider.test.ts` | *Modify.* Tests for CIMD-backed client resolution. |
 | `test/transport.test.ts` | *Create.* Tests for the `WWW-Authenticate` scope hint. |
-| `README.md`, `CHANGELOG.md` | *Modify.* Document the new config option and record the change (Task 6). |
+| `README.md`, `CHANGELOG.md`, `docs/how-to-use.md` | *Modify.* Document the new config option and record the change (Task 6). |
 
 ---
 
@@ -1031,6 +1031,7 @@ git commit -m "feat(oauth): hint required scopes in the 401 WWW-Authenticate cha
 **Files:**
 - Modify: `README.md`
 - Modify: `CHANGELOG.md`
+- Modify: `docs/how-to-use.md`
 
 **Interfaces:** None — docs only.
 
@@ -1051,7 +1052,35 @@ In `README.md`'s `## OAuth / PKCE client flow` section (~line 266-277), update s
 3. **Authorization** — redirect the user to `GET /authorize` with `response_type=code`, `client_id`, `redirect_uri`, `code_challenge` (S256 PKCE), and optionally `scope`. The built-in identity form collects credentials and calls your `identity.verify`. On success, the server 302-redirects to `redirect_uri?code=<auth_code>&iss=<baseUrl>` (the `iss` parameter, RFC 9207, lets a compliant client detect an authorization-server mix-up before redeeming the code).
 ```
 
-- [ ] **Step 3: Add a CHANGELOG entry**
+- [ ] **Step 3: Update the end-to-end curl walkthrough and production checklist**
+
+In `docs/how-to-use.md`, section `## 7. Drive the full OAuth + MCP flow (end to end)`
+(~line 188-236), add a note after the closing code fence (after line 233, before the
+"In a real MCP client..." line):
+
+```markdown
+> **`iss` on the redirect.** Step (c)'s 302 now also carries `&iss=<baseUrl>` (RFC 9207) —
+> a compliant client checks this matches the issuer it expects before proceeding, to catch
+> an authorization-server mix-up. The `sed` extraction above only pulls `code`, so it's
+> unaffected; a real client parses the full redirect URL.
+
+> **Client ID Metadata Documents.** Step (b) shows Dynamic Client Registration. If the
+> server has `allowClientIdMetadataDocuments: true`, you can skip registration entirely and
+> use an `https://` URL (hosting a `{ client_id, redirect_uris, ... }` JSON document) as
+> `CLIENT_ID` directly — see the Config reference in the README.
+```
+
+In section `## 9. Going to production — checklist` (~line 252-265), add a checklist item
+after the `ipExtractor` item:
+
+```markdown
+- [ ] **Decide on `allowClientIdMetadataDocuments`.** Off by default. Turning it on lets
+      unregistered HTTPS `client_id`s authorize by hosting a metadata document — an
+      outbound-fetch surface at authorization time. Leave it off unless you have clients
+      that need it.
+```
+
+- [ ] **Step 4: Add a CHANGELOG entry**
 
 In `CHANGELOG.md`, add a new `## [Unreleased]` section above `## [0.1.0] - 2026-06-25`:
 
@@ -1068,12 +1097,89 @@ In `CHANGELOG.md`, add a new `## [Unreleased]` section above `## [0.1.0] - 2026-
 - Not yet adopted: the MCP TypeScript SDK v2 beta (`@modelcontextprotocol/server`/`@modelcontextprotocol/client`) implementing the non-authorization parts of the 2026-07-28 spec (stateless handshake, `resultType`, `server/discover`, etc.) — see the plan doc for rationale.
 ```
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
-git add README.md CHANGELOG.md
+git add README.md CHANGELOG.md docs/how-to-use.md
 git commit -m "docs: record MCP 2026-07-28 authorization compliance"
 ```
+
+---
+
+### Task 7: Runtime validation — run the server and verify with a live client
+
+Not a code task — no diff for a task reviewer to gate. This is an end-to-end acceptance
+check run once, after Task 6, before the final whole-branch review: start a real instance
+of the kit and drive it with an actual HTTP client to confirm the OAuth + MCP flow the prior
+six tasks touched still works end to end, not just under vitest mocks.
+
+**Files:** None created or modified (unless the check surfaces a bug, in which case: fix it
+in the file it lives in, re-run this task from the top, and note the fix in the ledger).
+
+- [ ] **Step 1: Start the server**
+
+Use the existing example server as the runnable instance — it's already wired with an
+in-memory store, an identity provider, and a couple of tools (see
+`examples/appointments/server.ts` and `run.ts`, and `docs/how-to-use.md` section 3 "Run it
+locally"). Run it in the background:
+
+```bash
+npx tsx examples/appointments/run.ts &
+sleep 1
+curl -s http://localhost:3000/.well-known/oauth-authorization-server | jq .
+```
+
+Expected: JSON metadata including `client_id_metadata_document_supported` (from Task 3) and
+`code_challenge_methods_supported: ["S256"]`.
+
+- [ ] **Step 2: Drive the full OAuth + MCP flow from a second, independent process**
+
+The point of this step is a client with no shared code or state with the server — not
+another vitest mock. Use the exact `curl` sequence in `docs/how-to-use.md` section 7
+(steps a-e: PKCE generation, register, authorize, token exchange, `tools/call`), run from a
+plain shell, to confirm:
+- the `iss` parameter is present on the step-(c) redirect and equals the server's `baseUrl`
+  (Task 1)
+- the step-(e) tool call succeeds and returns the expected content
+
+Then additionally exercise what Tasks 3-5 added, from that same external shell:
+- **CIMD (Task 3):** re-run step (b)-(e) using a `client_id` that is an `https://` URL
+  instead of registering — this requires a second, tiny process serving a static
+  `{ "client_id": "<url>", "redirect_uris": [...] }` JSON document (e.g.
+  `npx serve` on a temp directory, or `python3 -m http.server`) so the flow has a real
+  metadata document to fetch over the network — and confirm the authorization succeeds
+  without a prior `/register` call. Requires the running server to have
+  `allowClientIdMetadataDocuments: true`; if the example server doesn't set it, start a
+  second instance that does (a one-line inline config change is fine for this check, not a
+  permanent edit).
+- **`application_type` (Task 4):** re-run step (b) with `"application_type": "web"` in the
+  body and confirm the 201 response echoes it; retry with `"application_type": "bogus"` and
+  confirm a 400.
+- **`WWW-Authenticate` scope hint (Task 5):** `curl -i -X POST http://localhost:3000/mcp
+  -H 'content-type: application/json' -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'`
+  with no `Authorization` header, and confirm the `WWW-Authenticate` response header
+  includes a `scope="..."` attribute.
+
+- [ ] **Step 3: Attach a second agent as the verifying client**
+
+Dispatch a fresh subagent (general-purpose, no special tools beyond Bash/curl) with:
+the server's base URL, the exact checks from Step 2 above, and instructions to run them
+independently and report PASS/FAIL per check with the actual response bodies/headers —
+not to trust this plan's predictions. This agent must not read this repo's source or tests
+first; it verifies the server's *observable* behavior as an outside HTTP client would, the
+same way a real MCP client integration test would. Report back pass/fail per check.
+
+- [ ] **Step 4: Tear down**
+
+```bash
+kill %1  # or the PID from Step 1
+```
+
+- [ ] **Step 5: Record the result**
+
+Append to the SDD ledger: `Task 7: runtime validation <PASS|FAIL> — <one line per check>`.
+Any FAIL routes back into the normal fix flow (resume the relevant task's implementer,
+re-review, done) before the final whole-branch review runs.
 
 ---
 
@@ -1088,7 +1194,7 @@ git commit -m "docs: record MCP 2026-07-28 authorization compliance"
 
 ## Self-Review
 
-**Spec coverage:** RFC 9207 `iss` (Task 1) ✓. CIMD / DCR deprecation (Tasks 2-3) ✓. `application_type` / SEP-837 (Task 4) ✓. `WWW-Authenticate` scope hint, RFC 6750 §3 (Task 5) ✓. Client-credentials-by-issuer, insufficient-scope 403, error-code renumbering, and the full SDK v2 wire-protocol rewrite are explicitly logged as out of scope with rationale above, not silently dropped.
+**Spec coverage:** RFC 9207 `iss` (Task 1) ✓. CIMD / DCR deprecation (Tasks 2-3) ✓. `application_type` / SEP-837 (Task 4) ✓. `WWW-Authenticate` scope hint, RFC 6750 §3 (Task 5) ✓. Docs, including the end-to-end `curl` walkthrough and production checklist (Task 6) ✓. Live, out-of-process verification against a running instance (Task 7) ✓. Client-credentials-by-issuer, insufficient-scope 403, error-code renumbering, and the full SDK v2 wire-protocol rewrite are explicitly logged as out of scope with rationale above, not silently dropped.
 
 **Placeholder scan:** No TBD/TODO markers introduced by this plan (the pre-existing `TODO(fix6)` comment at `transport.ts:123` is untouched — out of scope here). All steps carry runnable code.
 
