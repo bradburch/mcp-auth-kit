@@ -305,4 +305,57 @@ describe("insufficient_scope — 403 step-up flow", () => {
     });
     expect(res.status).toBe(200);
   });
+
+  it("gates an ungranted mutating tool called inside a JSON-RPC batch (transport-level 403 only covers a single non-batch call)", async () => {
+    // A batch request is an array — the transport-level 403 short-circuit deliberately only
+    // fires for a single, non-batch tools/call (a batch mixing granted/ungranted calls can't
+    // map cleanly to one HTTP status). This proves the ONLY thing protecting an ungranted
+    // mutating tool called via a batch is registerTools's own per-call gating in registry.ts
+    // (registerUngrantedMutatingTool) — not the transport-level check.
+    const mutatingWriteTool = {
+      name: "delete_thing_mutating",
+      description: "delete (two-phase)",
+      scope: "write",
+      inputSchema: z.object({}),
+      mutating: {
+        preview: async () => ({ summary: "delete the thing", data: {} }),
+        execute: async () => ({ content: [{ type: "text" as const, text: "deleted" }] }),
+      },
+    };
+    const app = createMcpServer({
+      baseUrl,
+      storage: createMemoryStorage(),
+      scopes,
+      identity: { fields: [{ name: "email", label: "Email" }], verify: async () => "u1" },
+      tools: [mutatingWriteTool],
+    });
+    const token = await getToken(app); // defaults to account:read only — no "write"
+    const res = await app.request("/mcp", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${token}`,
+        "content-type": "application/json",
+        accept: "application/json, text/event-stream",
+      },
+      body: JSON.stringify([
+        {
+          jsonrpc: "2.0",
+          id: 1,
+          method: "tools/call",
+          params: { name: "delete_thing_mutating", arguments: {} },
+        },
+      ]),
+    });
+    // The batch falls through the transport-level 403 check by design — normal 200 dispatch.
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    const bodyText = JSON.stringify(body);
+    // The real preview/confirm machinery (two-phase.ts) was never reached — no confirmation
+    // token was minted, proving registerUngrantedMutatingTool's immediate-reject handler ran
+    // instead of registerMutatingTool's real preview handler.
+    expect(bodyText).not.toContain("confirmationToken");
+    const rpcResponse = Array.isArray(body) ? body[0] : body;
+    expect(rpcResponse.result.isError).toBe(true);
+    expect(JSON.stringify(rpcResponse.result)).toContain("write");
+  });
 });

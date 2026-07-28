@@ -142,12 +142,18 @@ export function registerTools(
 }
 
 /** Register an ungranted mutating tool with a preview handler that immediately rejects —
- *  it never reaches two-phase.ts's real preview/confirm machinery. */
+ *  it never reaches two-phase.ts's real preview/confirm machinery.
+ *
+ *  Annotations are built the same way `registerMutatingTool` (two-phase.ts) builds them
+ *  (`destructiveHint: true` unless overridden) so a tool's discovery metadata in tools/list
+ *  is identical whether or not the caller happens to have the scope — a caller stepping up
+ *  from ungranted to granted must not see the tool's annotations change out from under it. */
 function registerUngrantedMutatingTool(server: McpServer, tool: MutatingToolDef): void {
   const shape = toShape(tool.inputSchema);
+  const annotations = { destructiveHint: true, ...(tool.annotations ?? {}) };
   server.registerTool(
     tool.name,
-    { description: tool.description, inputSchema: shape, annotations: tool.annotations },
+    { description: tool.description, inputSchema: shape, annotations },
     async () => insufficientScopeResult(tool.scope!),
   );
 }
