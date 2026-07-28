@@ -87,7 +87,7 @@ export interface OAuthProviderConfig {
    * (MCP 2026-07-28, deprecating Dynamic Client Registration). Off by default —
    * enabling it makes this server fetch an operator-uncontrolled URL during
    * authorization; only turn it on once you're comfortable with that outbound
-   * request surface. See `docs/oauth.md`.
+   * request surface.
    */
   allowClientIdMetadataDocuments?: boolean;
 }
