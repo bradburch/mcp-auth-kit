@@ -15,8 +15,11 @@ npm install mcp-oauth-kit
 Peer dependencies (not bundled):
 
 ```bash
-npm install hono @modelcontextprotocol/sdk
+npm install hono @modelcontextprotocol/sdk zod
 ```
+
+Node **22+** is required, and your project must be ESM (`"type": "module"` in
+`package.json`) — the package publishes an ESM-only `exports` map with no `require` condition.
 
 ## Quick start
 
@@ -96,6 +99,7 @@ See `examples/appointments/server.ts` for a complete working server.
 | `hooks`                          | `ObservabilityHooks`                | No       | Async callbacks for tool calls, OAuth lifecycle events, and mutation audit.                                                                                                                                                                                         |
 | `ipExtractor`                    | `(req: Request) => string`          | No       | Override how the trusted client IP is derived for per-IP rate limiting (see below).                                                                                                                                                                                 |
 | `allowClientIdMetadataDocuments` | `boolean`                           | No       | Resolve unregistered `https://` client_ids as [Client ID Metadata Documents](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization) instead of requiring Dynamic Client Registration. Off by default (see "OAuth / PKCE client flow" below). |
+| `allowedOrigins`                 | `string[]`                          | No       | Exact-match allowlist for the browser `Origin` header on `POST /mcp` (DNS-rebinding protection). Requests with no `Origin` header are always allowed; a request WITH one is rejected unless it's in this list. |
 
 ### `ScopeConfig`
 
@@ -195,7 +199,15 @@ interface ToolContext {
 
 ### Scope gating
 
-If a tool specifies `scope`, the kit checks the caller's token at dispatch time. A caller whose token lacks the required scope receives an error without the handler running — the tool is also hidden from the `tools/list` response for that caller. Scopes flagged `default: true` in the server config are automatically granted when the client requests no explicit scopes. `ctx.scopes` inside a handler reflects the token's full granted scope list.
+If a tool specifies `scope`, the kit checks the caller's token at dispatch time. The tool is
+always listed in `tools/list` regardless of the caller's granted scopes — a client can
+discover it exists and request the scope via step-up authorization. A caller whose token
+lacks the required scope receives an `isError` result naming the missing scope instead of
+the handler running; for a single (non-batch) `tools/call`, the HTTP response is also a `403`
+carrying a `WWW-Authenticate: Bearer error="insufficient_scope", scope="<required>", ...`
+challenge (RFC 6750 §3). Scopes flagged `default: true` in the server config are
+automatically granted when the client requests no explicit scopes. `ctx.scopes` inside a
+handler reflects the token's full granted scope list.
 
 ### Mutating tool (`MutatingToolDef`) — two-phase preview → confirm
 
@@ -266,6 +278,15 @@ All request bodies — OAuth endpoints and `POST /mcp` — are capped at **1 MB*
 
 ## OAuth / PKCE client flow
 
+> **Transport vs. authorization spec version.** This kit's authorization surface (discovery,
+> DCR/CIMD, PKCE, tokens) targets MCP 2026-07-28. Its MCP *transport* layer is built on
+> `@modelcontextprotocol/sdk` `^1`, which implements the `2025-11-25` wire protocol (no
+> `2026-07-28`-only features like `server/discover` or `resultType`) — a fully
+> `2026-07-28`-compliant client that sends `MCP-Protocol-Version: 2026-07-28` will fall back
+> to legacy negotiation per the spec's own backward-compatibility rules, and the flow below
+> will still work. This will be resolved when the kit migrates to the SDK's v2 line; see the
+> CHANGELOG.
+
 The kit implements OAuth 2.1 with PKCE (S256). A standards-compliant MCP client discovers and authenticates as follows:
 
 1. **Discovery** — `GET /.well-known/oauth-authorization-server` (RFC 8414) returns server metadata including `authorization_endpoint`, `token_endpoint`, and `registration_endpoint`.
@@ -301,14 +322,18 @@ Types: `McpServerConfig`, `ScopeConfig`, `IdentityField`, `IdentityConfig`, `Bra
 
 ### Advanced / low-level API
 
-Reach for these when you need to compose your own Hono app — custom middleware, sub-path mounting, or a custom OAuth UI — rather than using `createMcpServer` directly.
+Reach for these when you need to compose your own Hono app — custom middleware, a custom
+OAuth UI, or wiring in your own routes alongside these — rather than using `createMcpServer`
+directly. **The origin-root requirement above still applies** — none of these lower-level
+pieces lift it; RFC 8414 discovery breaks under a path prefix regardless of which API layer
+mounts the routes.
 
-- `createOAuthProvider(config)` — build the OAuth provider independently. `OAuthProviderConfig` fields: `storage`, `scopes`, `baseUrl`, and optional `now?: () => number` (injectable clock for deterministic testing).
+- `createOAuthProvider(config)` — build the OAuth provider independently. `OAuthProviderConfig` fields: `storage`, `scopes`, `baseUrl`, optional `now?: () => number` (injectable clock for deterministic testing), and optional `allowClientIdMetadataDocuments?: boolean` (see the Config reference table above).
 - `mountOAuthRoutes(app, deps)` — mount `/register`, `/authorize`, `/token`, `/revoke` onto an existing Hono app.
 - `mountDiscovery(app, deps)` — mount `/.well-known/oauth-authorization-server` and `/.well-known/oauth-protected-resource`.
 - `createRateLimiter({ storage, config? })` — build the rate limiter independently.
 - `handleMcpRequest(req, deps)` — handle a single `POST /mcp` request; returns a `Promise<Response>`.
-- `renderAuthorizePage(params)` — render the built-in login form HTML (use when building a custom `/authorize` handler).
+- `renderAuthorizePage(identity, params)` — render the built-in login form HTML (use when building a custom `/authorize` handler).
 
 Types: `OAuthProvider`, `OAuthProviderConfig`, `TokenPair`, `OAuthRouteDeps`, `DiscoveryDeps`, `RateLimiter`, `McpRequestDeps`
 
