@@ -71,6 +71,7 @@ export function createMcpServer(config: McpServerConfig): Hono {
       serverVersion: DEFAULT_SERVER_VERSION,
       env: undefined,
       hooks,
+      defaultScopes: config.scopes.filter((s) => s.default).map((s) => s.name),
     }),
   );
 
