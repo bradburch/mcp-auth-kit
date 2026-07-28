@@ -34,6 +34,7 @@ export function createMcpServer(config: McpServerConfig): Hono {
     storage: config.storage,
     scopes: config.scopes,
     baseUrl: config.baseUrl,
+    allowClientIdMetadataDocuments: config.allowClientIdMetadataDocuments,
   });
 
   const rateLimiter = createRateLimiter({
@@ -42,7 +43,11 @@ export function createMcpServer(config: McpServerConfig): Hono {
   });
 
   // Discovery (well-known) + OAuth HTTP endpoints.
-  mountDiscovery(app, { baseUrl: config.baseUrl, scopes: config.scopes });
+  mountDiscovery(app, {
+    baseUrl: config.baseUrl,
+    scopes: config.scopes,
+    clientIdMetadataDocumentsSupported: config.allowClientIdMetadataDocuments,
+  });
   mountOAuthRoutes(app, {
     provider,
     identity: config.identity,

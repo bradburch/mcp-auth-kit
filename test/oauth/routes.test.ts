@@ -153,3 +153,17 @@ describe("POST /authorize — RFC 9207 iss parameter", () => {
     expect(location.searchParams.get("code")).toBeTruthy();
   });
 });
+
+it("advertises client_id_metadata_document_supported when enabled", async () => {
+  const app = new Hono();
+  mountDiscovery(app, { baseUrl, scopes, clientIdMetadataDocumentsSupported: true });
+  const res = await app.request("/.well-known/oauth-authorization-server");
+  expect((await res.json()).client_id_metadata_document_supported).toBe(true);
+});
+
+it("defaults client_id_metadata_document_supported to false", async () => {
+  const app = new Hono();
+  mountDiscovery(app, { baseUrl, scopes });
+  const res = await app.request("/.well-known/oauth-authorization-server");
+  expect((await res.json()).client_id_metadata_document_supported).toBe(false);
+});

@@ -6,8 +6,10 @@ import {
   accessTokenKey,
   refreshTokenKey,
   tokenFamilyKey,
+  cimdKey,
 } from "../storage/keys.js";
 import { sha256Hex, randomToken } from "../crypto.js";
+import { fetchClientIdMetadata } from "./cimd.js";
 
 /** TTL constants in seconds. */
 const TTL = {
@@ -15,6 +17,7 @@ const TTL = {
   AUTH_CODE: 5 * 60, // 5 minutes
   ACCESS_TOKEN: 60 * 60, // 1 hour
   REFRESH_TOKEN: 90 * 24 * 60 * 60, // 90 days
+  CIMD_CACHE: 60 * 60, // 1 hour — bounds staleness without needing to parse Cache-Control
 } as const;
 
 /** An access + refresh token pair returned to the client. */
@@ -78,6 +81,14 @@ export interface OAuthProviderConfig {
   baseUrl: string;
   /** Injectable clock for deterministic TTL/expiry in tests. */
   now?: () => number;
+  /**
+   * Resolve unregistered HTTPS client_ids as OAuth Client ID Metadata Documents
+   * (MCP 2026-07-28, deprecating Dynamic Client Registration). Off by default —
+   * enabling it makes this server fetch an operator-uncontrolled URL during
+   * authorization; only turn it on once you're comfortable with that outbound
+   * request surface. See `docs/oauth.md`.
+   */
+  allowClientIdMetadataDocuments?: boolean;
 }
 
 export interface OAuthProvider {
@@ -124,7 +135,7 @@ async function verifyPkceS256(codeVerifier: string, codeChallenge: string): Prom
 }
 
 export function createOAuthProvider(config: OAuthProviderConfig): OAuthProvider {
-  const { storage, scopes, baseUrl } = config;
+  const { storage, scopes, baseUrl, allowClientIdMetadataDocuments = false } = config;
   const now = config.now ?? (() => Date.now());
 
   const supportedScopes = scopes.map((s) => s.name);
@@ -148,6 +159,32 @@ export function createOAuthProvider(config: OAuthProviderConfig): OAuthProvider 
     if (resource && resource !== expectedResource) {
       throw new Error("Resource mismatch");
     }
+  }
+
+  /**
+   * Resolve the redirect URIs a client_id is allowed to use — from a stored
+   * (pre-registered / DCR) record first, falling back to a cached Client ID Metadata
+   * Document fetch when `allowClientIdMetadataDocuments` is enabled and the client_id
+   * looks like an https URL not already registered.
+   */
+  async function resolveClientRedirectUris(clientId: string): Promise<string[] | null> {
+    const raw = await storage.get(clientKey(clientId));
+    if (raw) return (JSON.parse(raw) as ClientData).redirectUris;
+
+    if (!allowClientIdMetadataDocuments || !clientId.startsWith("https://")) return null;
+
+    const cacheKey = cimdKey(await sha256Hex(clientId));
+    const cached = await storage.get(cacheKey);
+    if (cached !== null) {
+      // Empty string is the cached "fetched but invalid/unreachable" sentinel.
+      return cached === "" ? null : (JSON.parse(cached) as string[]);
+    }
+
+    const doc = await fetchClientIdMetadata(clientId);
+    await storage.put(cacheKey, doc ? JSON.stringify(doc.redirectUris) : "", {
+      ttlSeconds: TTL.CIMD_CACHE,
+    });
+    return doc?.redirectUris ?? null;
   }
 
   /**
@@ -243,14 +280,13 @@ export function createOAuthProvider(config: OAuthProviderConfig): OAuthProvider 
       // RFC 8707 resource validation (audit fix) — reject a mismatched resource at authorize time.
       assertResource(input.resource);
 
-      const raw = await storage.get(clientKey(input.clientId));
-      if (!raw) {
+      const redirectUris = await resolveClientRedirectUris(input.clientId);
+      if (!redirectUris) {
         throw new Error("Unknown client");
       }
-      const client = JSON.parse(raw) as ClientData;
 
       // RFC 6749 §3.1.2.3: the redirect_uri must match one the client registered.
-      if (!client.redirectUris.includes(input.redirectUri)) {
+      if (!redirectUris.includes(input.redirectUri)) {
         throw new Error("Redirect URI mismatch");
       }
 
@@ -272,10 +308,8 @@ export function createOAuthProvider(config: OAuthProviderConfig): OAuthProvider 
 
     async validateClientRedirect(clientId, redirectUri) {
       if (!clientId || !redirectUri) return false;
-      const raw = await storage.get(clientKey(clientId));
-      if (!raw) return false;
-      const client = JSON.parse(raw) as ClientData;
-      return client.redirectUris.includes(redirectUri);
+      const redirectUris = await resolveClientRedirectUris(clientId);
+      return redirectUris?.includes(redirectUri) ?? false;
     },
 
     async exchangeCode(input) {
