@@ -1,4 +1,4 @@
-// OAuth HTTP route handlers (RFC 6749 / RFC 7009 / RFC 8414).
+// OAuth HTTP route handlers (RFC 6749 / RFC 7009 / RFC 8414 / RFC 9207).
 // Provides mountOAuthRoutes(app, deps) for wiring POST /register, GET+POST /authorize,
 // POST /token, POST /revoke onto a Hono app.
 import type { Context, Hono } from "hono";
@@ -9,6 +9,7 @@ import { renderAuthorizePage, type AuthorizePageParams } from "../identity/page.
 import type { RateLimiter } from "../rate-limit.js";
 import { extractClientIp } from "../http/client-ip.js";
 import { readCappedBody } from "../http/body-limit.js";
+import { hasFragment, isAllowedRedirectUriScheme } from "./redirect-uri.js";
 
 // ─── Security header constants ───────────────────────────────────────────────
 
@@ -29,14 +30,6 @@ function oauthError(
   description?: string,
 ): { error: string; error_description?: string } {
   return description ? { error, error_description: description } : { error };
-}
-
-function hasFragment(uri: string): boolean {
-  try {
-    return new URL(uri).hash !== "";
-  } catch {
-    return false;
-  }
 }
 
 /**
@@ -155,7 +148,7 @@ async function fireAudit(
  */
 export function mountOAuthRoutes(
   app: Hono,
-  { provider, identity, hooks, rateLimiter, ipExtractor }: OAuthRouteDeps,
+  { provider, identity, baseUrl, hooks, rateLimiter, ipExtractor }: OAuthRouteDeps,
 ): void {
   const clientIp = ipExtractor ?? extractClientIp;
 
@@ -206,8 +199,7 @@ export function mountOAuthRoutes(
     try {
       parsedUris = (redirectUris as string[]).map((u: string) => {
         const url = new URL(u);
-        const isLocal = url.hostname === "localhost" || url.hostname === "127.0.0.1";
-        if (url.protocol !== "https:" && !(url.protocol === "http:" && isLocal)) {
+        if (!isAllowedRedirectUriScheme(u)) {
           throw new Error(`Invalid redirect URI scheme: ${url.protocol}`);
         }
         return url.toString();
@@ -222,10 +214,24 @@ export function mountOAuthRoutes(
       );
     }
 
+    // SEP-837 (MCP 2026-07-28 changelog item 8): validate application_type if supplied.
+    const applicationType = body.application_type;
+    if (
+      applicationType !== undefined &&
+      applicationType !== "web" &&
+      applicationType !== "native"
+    ) {
+      return c.json(
+        oauthError("invalid_client_metadata", 'application_type must be "web" or "native"'),
+        400,
+      );
+    }
+
     try {
       const result = await provider.registerClient({
         redirectUris: parsedUris,
         clientName: typeof body.client_name === "string" ? body.client_name : undefined,
+        applicationType: applicationType as "web" | "native" | undefined,
       });
       void fireAudit(hooks, {
         event: "client_registered",
@@ -239,6 +245,7 @@ export function mountOAuthRoutes(
           client_id_issued_at: Math.floor(result.createdAt / 1000),
           redirect_uris: result.redirectUris,
           token_endpoint_auth_method: "none",
+          ...(result.applicationType ? { application_type: result.applicationType } : {}),
         },
         201,
       );
@@ -377,6 +384,9 @@ export function mountOAuthRoutes(
       const location = new URL(redirectUri);
       location.searchParams.set("code", code);
       if (state) location.searchParams.set("state", state);
+      // RFC 9207 (MCP 2026-07-28 changelog item 7): echo the issuer so clients can
+      // detect a mix-up attack before redeeming the code.
+      location.searchParams.set("iss", baseUrl);
 
       return c.redirect(location.toString(), 302);
     } catch (e) {

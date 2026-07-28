@@ -12,3 +12,4 @@ export const ipAuthRateKey = (ip: string, hourBucket: number) =>
   `mcp:auth_rate:${ip}:${hourBucket}`;
 export const ipTokenRateKey = (ip: string, hourBucket: number) =>
   `mcp:token_rate:${ip}:${hourBucket}`;
+export const cimdKey = (clientIdHash: string) => `mcp:cimd:${clientIdHash}`;

@@ -7,6 +7,8 @@ import type { ScopeConfig } from "../config.js";
 export interface DiscoveryDeps {
   baseUrl: string;
   scopes: ScopeConfig[];
+  /** Advertise support for OAuth Client ID Metadata Documents (MCP 2026-07-28). */
+  clientIdMetadataDocumentsSupported?: boolean;
 }
 
 /**
@@ -15,7 +17,10 @@ export interface DiscoveryDeps {
  * not on a sub-app mounted under a prefix, because RFC 8414 requires
  * /.well-known/oauth-authorization-server at the domain root.
  */
-export function mountDiscovery(app: Hono, { baseUrl, scopes }: DiscoveryDeps): void {
+export function mountDiscovery(
+  app: Hono,
+  { baseUrl, scopes, clientIdMetadataDocumentsSupported = false }: DiscoveryDeps,
+): void {
   // RFC 8414 — Authorization Server Metadata
   app.get("/.well-known/oauth-authorization-server", (c) => {
     return c.json({
@@ -30,6 +35,7 @@ export function mountDiscovery(app: Hono, { baseUrl, scopes }: DiscoveryDeps): v
       code_challenge_methods_supported: ["S256"],
       scopes_supported: scopes.map((s) => s.name),
       resource: `${baseUrl}/mcp`,
+      client_id_metadata_document_supported: clientIdMetadataDocumentsSupported,
     });
   });
 
