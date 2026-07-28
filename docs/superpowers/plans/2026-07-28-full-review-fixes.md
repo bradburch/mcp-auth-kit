@@ -1610,13 +1610,35 @@ Add a row to the Config reference table (after `allowClientIdMetadataDocuments`,
 | `allowedOrigins`                 | `string[]`                          | No       | Exact-match allowlist for the browser `Origin` header on `POST /mcp` (DNS-rebinding protection). Requests with no `Origin` header are always allowed; a request WITH one is rejected unless it's in this list. |
 ```
 
-- [ ] **Step 8: Verify and commit**
+- [ ] **Step 8: Fix the stale scope-gating description (Task 7 changed this behavior)**
+
+Task 7 (already complete on this branch) reversed the tool-visibility behavior this
+paragraph describes — a scope-gated tool is no longer hidden from `tools/list`; it's always
+listed, and calling it without the required scope now returns an `isError` result (plus, for
+a single non-batch `tools/call`, an HTTP 403 with an `insufficient_scope` challenge) instead
+of being invisible. Fix the "Scope gating" section:
+
+```markdown
+### Scope gating
+
+If a tool specifies `scope`, the kit checks the caller's token at dispatch time. The tool is
+always listed in `tools/list` regardless of the caller's granted scopes — a client can
+discover it exists and request the scope via step-up authorization. A caller whose token
+lacks the required scope receives an `isError` result naming the missing scope instead of
+the handler running; for a single (non-batch) `tools/call`, the HTTP response is also a `403`
+carrying a `WWW-Authenticate: Bearer error="insufficient_scope", scope="<required>", ...`
+challenge (RFC 6750 §3). Scopes flagged `default: true` in the server config are
+automatically granted when the client requests no explicit scopes. `ctx.scopes` inside a
+handler reflects the token's full granted scope list.
+```
+
+- [ ] **Step 9: Verify and commit**
 
 Run: `npm test` (README changes don't affect tests, but confirm nothing else broke in the same working tree state) and read the full file back once to confirm no broken Markdown tables or dangling links.
 
 ```bash
 git add README.md
-git commit -m "docs(readme): fix peer deps, ESM note, API signatures, sub-path contradiction, transport-version caveat"
+git commit -m "docs(readme): fix peer deps, ESM note, API signatures, sub-path contradiction, transport-version caveat, scope-gating behavior"
 ```
 
 ---
@@ -1832,13 +1854,38 @@ exactly as `createMcpServer` does internally (see its source for the six-line wi
 just call `handleMcpRequest` directly per the README's low-level API reference.
 ````
 
-- [ ] **Step 6: Verify and commit**
+- [ ] **Step 6: Fix the stale scope-gating description (Task 7 changed this behavior)**
+
+Section 5 ("Scopes and scope gating") currently says a caller "won't even see" an
+ungranted tool in `tools/list` — Task 7 (already complete on this branch) reversed this:
+the tool is always listed, and calling it without the scope now returns an `isError`
+result (plus an HTTP 403 for a single non-batch `tools/call`). Fix the paragraph and code
+comment:
+
+```markdown
+Attach `scope` to a tool to gate it. The tool is always listed in `tools/list` regardless
+of the caller's granted scopes — a client can discover it exists and ask for the scope via
+step-up authorization. A caller whose token lacks the scope gets an `isError` result
+naming the missing scope instead of the handler running:
+
+```ts
+{
+  name: "delete_thing",
+  description: "Delete a thing.",
+  scope: "write",          // always listed; blocked unless the token has "write"
+  inputSchema: z.object({ id: z.string() }),
+  handler: async (input, ctx) => { /* ctx.scopes lists everything granted */ },
+}
+```
+```
+
+- [ ] **Step 7: Verify and commit**
 
 Run: `npm test` to confirm nothing else broke; read the full file back once.
 
 ```bash
 git add docs/how-to-use.md
-git commit -m "docs(how-to-use): runnable code samples, two-phase wire contract, mandatory Accept header, real custom-identity example"
+git commit -m "docs(how-to-use): runnable code samples, two-phase wire contract, mandatory Accept header, real custom-identity example, scope-gating behavior"
 ```
 
 ---
