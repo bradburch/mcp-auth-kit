@@ -249,6 +249,51 @@ describe("POST /mcp — Mcp-Method / Mcp-Name header validation", () => {
     expect(body.error.code).toBe(-32700);
   });
 
+  it("does not reject a JSON-RPC batch (array body) with HEADER_MISMATCH even when Mcp-Method is present", async () => {
+    // typeof [] === "object" in JS, so the headerMismatch guard must explicitly exclude
+    // arrays — otherwise a batch body's (undefined) .method never matches the Mcp-Method
+    // header and the ENTIRE batch is wrongly rejected with a 400, even when every element
+    // in it actually matches. Batches are meant to fall through to normal dispatch, where
+    // registry-level scope gating handles each element individually (see scope-gating.test.ts).
+    const app = createMcpServer({
+      baseUrl,
+      storage: createMemoryStorage(),
+      scopes: [{ name: "account:read", default: true }],
+      identity: {
+        fields: [{ name: "email", label: "Email" }],
+        verify: async () => "user-1",
+      },
+      tools: [
+        {
+          name: "list_slots",
+          description: "list",
+          inputSchema: z.object({}),
+          handler: async () => ({ content: [{ type: "text", text: "ok" }] }),
+        },
+      ],
+    });
+    const token = await getToken(app);
+    const res = await app.request("/mcp", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${token}`,
+        "content-type": "application/json",
+        accept: "application/json, text/event-stream",
+        "mcp-method": "tools/call",
+      },
+      body: JSON.stringify([
+        {
+          jsonrpc: "2.0",
+          id: 1,
+          method: "tools/call",
+          params: { name: "list_slots", arguments: {} },
+        },
+      ]),
+    });
+    // Falls through to normal 200 dispatch — specifically not a 400 HEADER_MISMATCH.
+    expect(res.status).toBe(200);
+  });
+
   it("allows a request with no Mcp-Method/Mcp-Name headers at all (older clients)", async () => {
     const app = createMcpServer({
       baseUrl,

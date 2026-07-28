@@ -52,8 +52,12 @@ function headerMismatch(req: Request, requestBody: string): boolean {
   }
   // A bare null/array/scalar isn't a JSON-RPC request shape — treat it the same as
   // unparseable and let the SDK transport reject it downstream (mirrors the same guard
-  // in oauth/routes.ts's readBodyParsed).
-  if (parsedRaw === null || typeof parsedRaw !== "object") return false;
+  // in oauth/routes.ts's readBodyParsed). Arrays (JSON-RPC batch requests) are explicitly
+  // excluded here too: they fall through to normal dispatch, where registry-level scope
+  // gating handles each element individually.
+  if (parsedRaw === null || Array.isArray(parsedRaw) || typeof parsedRaw !== "object") {
+    return false;
+  }
   const parsed = parsedRaw as { method?: unknown; params?: { name?: unknown } };
 
   if (mcpMethod !== null && parsed.method !== mcpMethod) return true;
@@ -75,8 +79,13 @@ export interface McpRequestDeps {
   hooks: ObservabilityHooks;
   /** Scopes granted when a client requests none — hinted in the 401 WWW-Authenticate (RFC 6750 §3). */
   defaultScopes: string[];
-  /** Exact-match allowlist for the `Origin` header — see `McpServerConfig.allowedOrigins`. */
-  allowedOrigins: string[];
+  /**
+   * Exact-match allowlist for the `Origin` header — see `McpServerConfig.allowedOrigins`.
+   * Optional for backward compatibility with existing low-level callers; omitting it is
+   * equivalent to passing `[]` and preserves the secure-by-default behavior (any request
+   * carrying an `Origin` header is rejected).
+   */
+  allowedOrigins?: string[];
 }
 
 /**
@@ -90,7 +99,7 @@ export async function handleMcpRequest(req: Request, deps: McpRequestDeps): Prom
   // non-browser client (the common case) — always allowed. An Origin header present but
   // not in the configured allowlist (default: nothing allowed) is rejected outright.
   const origin = req.headers.get("Origin");
-  if (origin !== null && !deps.allowedOrigins.includes(origin)) {
+  if (origin !== null && !(deps.allowedOrigins ?? []).includes(origin)) {
     return Response.json(jsonRpcError(JSON_RPC_ERROR.ORIGIN_NOT_ALLOWED, "Origin not allowed"), {
       status: 403,
     });

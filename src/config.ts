@@ -157,6 +157,10 @@ export interface McpServerConfig {
    * allowed. A request WITH an Origin header is rejected with 403 unless it exactly
    * matches an entry here — including when this option is omitted entirely, since an
    * unconfigured server has no way to know which origins are legitimate.
+   *
+   * Entries are compared by exact string match — a configured `https://claude.ai` will
+   * NOT match an incoming `Origin: https://claude.ai/` (trailing slash) or a
+   * different-cased host. Copy the origin value exactly as the browser sends it.
    */
   allowedOrigins?: string[];
 }
