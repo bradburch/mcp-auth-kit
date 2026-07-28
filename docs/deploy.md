@@ -59,7 +59,7 @@ Storage: `createCloudflareKvStorage` — built in, no extra install.
 npm install @hono/node-server
 ```
 
-Use any `KvLike` implementation. The in-memory adapter works for single-process deployments; use the Redis or Postgres adapter from [docs/storage-adapters.md](storage-adapters.md) for persistence.
+Use any `KvLike` implementation. **The in-memory adapter is for local development only — even a single production process restarts, loses state, and (if ever scaled to more than one instance) won't share state across them.** Use the Redis or Postgres adapter from [docs/storage-adapters.md](storage-adapters.md) for anything beyond local dev.
 
 ```ts
 // src/index.ts
@@ -71,6 +71,10 @@ const app = createMcpServer({
   baseUrl: process.env.BASE_URL ?? "http://localhost:3000",
   storage: createMemoryStorage(), // swap for Redis/Postgres adapter in production
   scopes: [{ name: "account:read", default: true }],
+  identity: {
+    fields: [{ name: "email", label: "Email", type: "email", required: true }],
+    verify: async (fields) => (await isValidUser(fields.email)) ? fields.email : null,
+  },
   tools,
 });
 
@@ -100,6 +104,10 @@ const app = createMcpServer({
   baseUrl: process.env.BASE_URL ?? "https://mcp.example.com",
   storage: createMemoryStorage(),
   scopes: [{ name: "account:read", default: true }],
+  identity: {
+    fields: [{ name: "email", label: "Email", type: "email", required: true }],
+    verify: async (fields) => (await isValidUser(fields.email)) ? fields.email : null,
+  },
   tools,
 });
 
@@ -126,11 +134,31 @@ const app = createMcpServer({
   baseUrl: process.env.NEXT_PUBLIC_BASE_URL ?? "https://mcp.example.com",
   storage: createMemoryStorage(),
   scopes: [{ name: "account:read", default: true }],
+  identity: {
+    fields: [{ name: "email", label: "Email", type: "email", required: true }],
+    verify: async (fields) => (await isValidUser(fields.email)) ? fields.email : null,
+  },
   tools,
 });
 
 export const GET = handle(app);
 export const POST = handle(app);
+```
+
+Vercel Functions live under `/api` by default, which conflicts with the origin-root requirement stated above. Add rewrites so the well-known and OAuth paths resolve at the root while the function itself stays at its normal Vercel location:
+
+```json
+// vercel.json
+{
+  "rewrites": [
+    { "source": "/.well-known/:path*", "destination": "/api/:path*" },
+    { "source": "/authorize", "destination": "/api/authorize" },
+    { "source": "/token", "destination": "/api/token" },
+    { "source": "/register", "destination": "/api/register" },
+    { "source": "/revoke", "destination": "/api/revoke" },
+    { "source": "/mcp", "destination": "/api/mcp" }
+  ]
+}
 ```
 
 For the `"nodejs"` runtime, substitute `"hono/vercel"` with `"@hono/node-server/vercel"` if the Vercel adapter requires it — check the current Hono docs for the correct import.
