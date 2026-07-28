@@ -181,15 +181,12 @@ export async function handleMcpRequest(req: Request, deps: McpRequestDeps): Prom
   ) {
     const calledTool = deps.tools.find((t) => t.name === parsedForScopeCheck!.params!.name);
     if (calledTool?.scope && !auth.scopes.includes(calledTool.scope)) {
-      return Response.json(
-        jsonRpcError(JSON_RPC_ERROR.INSUFFICIENT_SCOPE, "Insufficient scope"),
-        {
-          status: 403,
-          headers: {
-            "WWW-Authenticate": `Bearer error="insufficient_scope", scope="${calledTool.scope}", resource_metadata="${resourceMetadataUrl}"`,
-          },
+      return Response.json(jsonRpcError(JSON_RPC_ERROR.INSUFFICIENT_SCOPE, "Insufficient scope"), {
+        status: 403,
+        headers: {
+          "WWW-Authenticate": `Bearer error="insufficient_scope", scope="${calledTool.scope}", resource_metadata="${resourceMetadataUrl}"`,
         },
-      );
+      });
     }
   }
 

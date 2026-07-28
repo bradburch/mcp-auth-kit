@@ -24,36 +24,38 @@
 
 ## File Structure
 
-| File | Responsibility |
-|---|---|
-| `src/server.ts` | *Modify.* `allowedOrigins` config wiring (Task 1); `env: c.env` instead of hardcoded `undefined` (Task 8); baseUrl HTTPS validation (Task 4). |
-| `src/transport.ts` | *Modify.* Origin header validation (Task 1); `Mcp-Method`/`Mcp-Name` header validation (Task 6); `insufficient_scope` 403 support (Task 7). |
-| `src/oauth/discovery.ts` | *Modify.* `authorization_response_iss_parameter_supported`, PRM `scopes_supported`, drop non-standard `resource` from AS metadata, mount PRM at the `/mcp` sub-path too (Task 2). |
-| `src/identity/page.ts` | *Modify.* Display the redirect URI hostname (+ localhost warning); `frame-ancestors` CSP (Task 3). |
-| `src/oauth/routes.ts` | *Modify.* Wire the redirect-URI-hostname display into `authorizePageParams`/CSP (Task 3). |
-| `src/oauth/provider.ts` | *Modify.* Defense-in-depth audience re-check in `verifyAccessToken` (Task 4); CIMD cache respects `Cache-Control` (Task 5). |
-| `src/oauth/cimd.ts` | *Modify.* Parse and return the response's cache-control max-age (Task 5). |
-| `src/tools/registry.ts` | *Modify.* Register all tools regardless of scope; return an `insufficient_scope`-shaped error instead of executing when ungranted (Task 7). |
-| `src/config.ts` | *Modify.* `allowedOrigins` on `McpServerConfig` (Task 1); doc comment update on `ToolContext.env` (Task 8). |
-| `package.json` | *Modify.* SDK peer pin `>=1` → `^1` (Task 4); repository/homepage/bugs/keywords/author metadata (Task 13); version bump (Task 14). |
-| `examples/appointments/server.ts`, `run.ts`, `README.md` | *Modify.* `baseUrl` param defaulting to the test value but overridable; `run.ts` passes the real local URL (Task 9). |
-| `docs/deploy.md` | *Modify.* Fix the Cloudflare Workers env-access pattern; add `identity` to all 4 examples; fix the Vercel origin-root violation; fix the in-memory-adapter contradiction (Task 9, 11). |
-| `README.md` | *Modify.* Peer-dep list, Node/ESM note, `renderAuthorizePage` arg count, `OAuthProviderConfig` field list, sub-path-mounting contradiction, transport-version caveat, `allowedOrigins` doc (Task 10). |
-| `docs/how-to-use.md` | *Modify.* Runnable code samples, two-phase confirm wire contract, mandatory `Accept` header, real custom-identity composition example (Task 12). |
-| `CONTRIBUTING.md`, `CHANGELOG.md` | *Modify.* Overclaim wording, repo link (Task 13). |
-| `SECURITY.md` | *Modify.* Document the multi-tenant KV-sharing limitation (Task 4). |
+| File                                                     | Responsibility                                                                                                                                                                                        |
+| -------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `src/server.ts`                                          | _Modify._ `allowedOrigins` config wiring (Task 1); `env: c.env` instead of hardcoded `undefined` (Task 8); baseUrl HTTPS validation (Task 4).                                                         |
+| `src/transport.ts`                                       | _Modify._ Origin header validation (Task 1); `Mcp-Method`/`Mcp-Name` header validation (Task 6); `insufficient_scope` 403 support (Task 7).                                                           |
+| `src/oauth/discovery.ts`                                 | _Modify._ `authorization_response_iss_parameter_supported`, PRM `scopes_supported`, drop non-standard `resource` from AS metadata, mount PRM at the `/mcp` sub-path too (Task 2).                     |
+| `src/identity/page.ts`                                   | _Modify._ Display the redirect URI hostname (+ localhost warning); `frame-ancestors` CSP (Task 3).                                                                                                    |
+| `src/oauth/routes.ts`                                    | _Modify._ Wire the redirect-URI-hostname display into `authorizePageParams`/CSP (Task 3).                                                                                                             |
+| `src/oauth/provider.ts`                                  | _Modify._ Defense-in-depth audience re-check in `verifyAccessToken` (Task 4); CIMD cache respects `Cache-Control` (Task 5).                                                                           |
+| `src/oauth/cimd.ts`                                      | _Modify._ Parse and return the response's cache-control max-age (Task 5).                                                                                                                             |
+| `src/tools/registry.ts`                                  | _Modify._ Register all tools regardless of scope; return an `insufficient_scope`-shaped error instead of executing when ungranted (Task 7).                                                           |
+| `src/config.ts`                                          | _Modify._ `allowedOrigins` on `McpServerConfig` (Task 1); doc comment update on `ToolContext.env` (Task 8).                                                                                           |
+| `package.json`                                           | _Modify._ SDK peer pin `>=1` → `^1` (Task 4); repository/homepage/bugs/keywords/author metadata (Task 13); version bump (Task 14).                                                                    |
+| `examples/appointments/server.ts`, `run.ts`, `README.md` | _Modify._ `baseUrl` param defaulting to the test value but overridable; `run.ts` passes the real local URL (Task 9).                                                                                  |
+| `docs/deploy.md`                                         | _Modify._ Fix the Cloudflare Workers env-access pattern; add `identity` to all 4 examples; fix the Vercel origin-root violation; fix the in-memory-adapter contradiction (Task 9, 11).                |
+| `README.md`                                              | _Modify._ Peer-dep list, Node/ESM note, `renderAuthorizePage` arg count, `OAuthProviderConfig` field list, sub-path-mounting contradiction, transport-version caveat, `allowedOrigins` doc (Task 10). |
+| `docs/how-to-use.md`                                     | _Modify._ Runnable code samples, two-phase confirm wire contract, mandatory `Accept` header, real custom-identity composition example (Task 12).                                                      |
+| `CONTRIBUTING.md`, `CHANGELOG.md`                        | _Modify._ Overclaim wording, repo link (Task 13).                                                                                                                                                     |
+| `SECURITY.md`                                            | _Modify._ Document the multi-tenant KV-sharing limitation (Task 4).                                                                                                                                   |
 
 ---
 
 ### Task 1: `Origin` header validation (DNS rebinding protection)
 
 **Files:**
+
 - Modify: `src/config.ts` (add `allowedOrigins` to `McpServerConfig`)
 - Modify: `src/transport.ts` (add `allowedOrigins` to `McpRequestDeps`, validate `Origin`)
 - Modify: `src/server.ts` (thread `config.allowedOrigins` through)
 - Test: `test/transport.test.ts`
 
 **Interfaces:**
+
 - Produces: `McpServerConfig.allowedOrigins?: string[]`, `McpRequestDeps.allowedOrigins: string[]`.
 
 **Design decision (read before implementing):** the streamable-http spec's `Origin` MUST is scoped to the MCP transport endpoint (`POST /mcp`), which is where a malicious webpage could otherwise drive a DNS-rebinding attack against a locally-running server. It does not apply to the OAuth routes (`/authorize`, `/token`, `/register`, `/revoke`), which have their own CSRF-adjacent protections (exact redirect-URI matching, PKCE, single-use codes) and are not the spec's target here. Default behavior: **non-browser clients (no `Origin` header) are always allowed** — most MCP clients (Claude desktop, IDE plugins, server-to-server) never send `Origin`. **If `Origin` is present and `allowedOrigins` is not configured, reject with 403** — secure-by-default, since an unconfigured server has no way to know which origins are legitimate. If `Origin` is present and configured, allow only exact matches.
@@ -193,21 +195,21 @@ export const JSON_RPC_ERROR = {
 In `src/server.ts`, thread it through the `/mcp` handler:
 
 ```typescript
-  app.post("/mcp", (c) =>
-    handleMcpRequest(c.req.raw, {
-      provider,
-      rateLimiter,
-      storage: config.storage,
-      tools: config.tools,
-      baseUrl: config.baseUrl,
-      serverName: DEFAULT_SERVER_NAME,
-      serverVersion: DEFAULT_SERVER_VERSION,
-      env: c.env,
-      hooks,
-      defaultScopes: config.scopes.filter((s) => s.default).map((s) => s.name),
-      allowedOrigins: config.allowedOrigins ?? [],
-    }),
-  );
+app.post("/mcp", (c) =>
+  handleMcpRequest(c.req.raw, {
+    provider,
+    rateLimiter,
+    storage: config.storage,
+    tools: config.tools,
+    baseUrl: config.baseUrl,
+    serverName: DEFAULT_SERVER_NAME,
+    serverVersion: DEFAULT_SERVER_VERSION,
+    env: c.env,
+    hooks,
+    defaultScopes: config.scopes.filter((s) => s.default).map((s) => s.name),
+    allowedOrigins: config.allowedOrigins ?? [],
+  }),
+);
 ```
 
 (The `env: c.env` here is Task 8's fix — apply it in this same edit since you're touching this exact call site anyway; it avoids a second pass over the same six lines. Task 8's own step will confirm/test it.)
@@ -229,6 +231,7 @@ git commit -m "feat(transport): validate Origin header to prevent DNS rebinding 
 ### Task 2: Discovery metadata fixes bundle
 
 **Files:**
+
 - Modify: `src/oauth/discovery.ts`
 - Test: `test/oauth/routes.test.ts`
 
@@ -348,6 +351,7 @@ git commit -m "fix(oauth): discovery metadata gaps (iss flag, PRM scopes_support
 ### Task 3: Authorize page shows redirect URI + `frame-ancestors` CSP
 
 **Files:**
+
 - Modify: `src/identity/page.ts`
 - Modify: `src/oauth/routes.ts` (CSP constant only)
 - Test: `test/oauth/routes.test.ts`
@@ -445,12 +449,12 @@ function redirectUriDisplay(redirectUri: string): { hostname: string; isLocalhos
 In `renderAuthorizePage`, after the `errorHtml` line:
 
 ```typescript
-  const errorHtml = params.error ? `<div class="error">${escapeHtml(params.error)}</div>` : "";
+const errorHtml = params.error ? `<div class="error">${escapeHtml(params.error)}</div>` : "";
 
-  const { hostname: redirectHostname, isLocalhost } = redirectUriDisplay(params.redirect_uri);
-  const redirectNoticeHtml = isLocalhost
-    ? `<div class="redirect-notice warn">⚠ Signing in to a request from <strong>${escapeHtml(redirectHostname)}</strong> (localhost) — only continue if you started this yourself.</div>`
-    : `<div class="redirect-notice">Signing in to: <strong>${escapeHtml(redirectHostname)}</strong></div>`;
+const { hostname: redirectHostname, isLocalhost } = redirectUriDisplay(params.redirect_uri);
+const redirectNoticeHtml = isLocalhost
+  ? `<div class="redirect-notice warn">⚠ Signing in to a request from <strong>${escapeHtml(redirectHostname)}</strong> (localhost) — only continue if you started this yourself.</div>`
+  : `<div class="redirect-notice">Signing in to: <strong>${escapeHtml(redirectHostname)}</strong></div>`;
 ```
 
 Add it to the rendered body, right after `${errorHtml}`:
@@ -464,8 +468,17 @@ Add it to the rendered body, right after `${errorHtml}`:
 Add matching CSS to the `<style>` block, alongside `.error`:
 
 ```css
-    .redirect-notice { font-size: 0.85rem; color: #555; margin-bottom: 1rem; }
-    .redirect-notice.warn { background: #fffbeb; color: #92400e; padding: 0.75rem; border-radius: 8px; }
+.redirect-notice {
+  font-size: 0.85rem;
+  color: #555;
+  margin-bottom: 1rem;
+}
+.redirect-notice.warn {
+  background: #fffbeb;
+  color: #92400e;
+  padding: 0.75rem;
+  border-radius: 8px;
+}
 ```
 
 In `src/oauth/routes.ts`, update `AUTHORIZE_CSP`:
@@ -492,6 +505,7 @@ git commit -m "fix(oauth): display redirect URI + localhost warning on login pag
 ### Task 4: Security hardening bundle (baseUrl HTTPS check, audience re-check, SDK peer pin)
 
 **Files:**
+
 - Modify: `src/server.ts` (baseUrl validation)
 - Modify: `src/oauth/provider.ts` (audience re-check)
 - Modify: `package.json` (peer dep pin)
@@ -504,7 +518,7 @@ Three independent, small fixes:
 
 1. **`baseUrl` HTTPS validation.** Security-considerations: "All authorization server endpoints MUST be served over HTTPS." Currently unvalidated — an `http://` `baseUrl` (other than localhost, for dev) silently produces a non-compliant discovery document. Fail fast at `createMcpServer` construction time.
 2. **Defense-in-depth audience re-check.** `verifyAccessToken` reads `tokenData.resource` but never compares it to the server's own expected resource — harmless today (tokens are opaque randoms resolved only against this server's own KV keyspace) but fragile if two kit-built servers ever share one KV namespace. One-line check closes it regardless.
-3. **SDK peer dependency pin.** `package.json`'s `"@modelcontextprotocol/sdk": ">=1"` peer range permits `2.x`, which is a *different package* (`@modelcontextprotocol/server`) that this kit does not support — the range advertises compatibility that can't exist. Pin to `^1`, matching the devDependency.
+3. **SDK peer dependency pin.** `package.json`'s `"@modelcontextprotocol/sdk": ">=1"` peer range permits `2.x`, which is a _different package_ (`@modelcontextprotocol/server`) that this kit does not support — the range advertises compatibility that can't exist. Pin to `^1`, matching the devDependency.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -675,11 +689,13 @@ git commit -m "fix(security): baseUrl HTTPS validation, token audience re-check,
 ### Task 5: CIMD cache respects `Cache-Control`
 
 **Files:**
+
 - Modify: `src/oauth/cimd.ts` (parse and return cache lifetime)
 - Modify: `src/oauth/provider.ts` (use it instead of the fixed TTL)
 - Test: `test/oauth/cimd.test.ts`, `test/oauth/provider.test.ts`
 
 **Interfaces:**
+
 - `ClientIdMetadata` gains `maxAgeSeconds?: number`.
 - `resolveClientRedirectUris` uses it to set the cache TTL, clamped to a sane range so a document can't force an unbounded cache lifetime or force a cache-defeating `max-age=0` that reopens the repeated-outbound-fetch concern the fixed TTL existed to bound.
 
@@ -817,14 +833,14 @@ In `fetchClientIdMetadata`, capture the header before returning and include it i
 In `src/oauth/provider.ts`'s `resolveClientRedirectUris`, use it:
 
 ```typescript
-    const doc = await fetchClientIdMetadata(clientId);
-    // "[]" is the cached "fetched but invalid/unreachable" sentinel — JSON.parse("[]") is
-    // naturally an empty array, and [].includes(anything) is false, so no special-case
-    // branch is needed to read it back.
-    await storage.put(cacheKey, doc ? JSON.stringify(doc.redirectUris) : "[]", {
-      ttlSeconds: doc?.maxAgeSeconds ?? TTL.CIMD_CACHE,
-    });
-    return doc?.redirectUris ?? null;
+const doc = await fetchClientIdMetadata(clientId);
+// "[]" is the cached "fetched but invalid/unreachable" sentinel — JSON.parse("[]") is
+// naturally an empty array, and [].includes(anything) is false, so no special-case
+// branch is needed to read it back.
+await storage.put(cacheKey, doc ? JSON.stringify(doc.redirectUris) : "[]", {
+  ttlSeconds: doc?.maxAgeSeconds ?? TTL.CIMD_CACHE,
+});
+return doc?.redirectUris ?? null;
 ```
 
 - [ ] **Step 4: Run tests to verify they pass**
@@ -844,6 +860,7 @@ git commit -m "feat(oauth): CIMD cache respects Cache-Control max-age (clamped)"
 ### Task 6: `Mcp-Method` / `Mcp-Name` header validation
 
 **Files:**
+
 - Modify: `src/transport.ts`
 - Test: `test/transport.test.ts`
 
@@ -1057,13 +1074,14 @@ git commit -m "feat(transport): validate Mcp-Method/Mcp-Name headers against the
 ### Task 7: `insufficient_scope` 403 step-up flow
 
 **Files:**
+
 - Modify: `src/tools/registry.ts` (register all tools; gate execution, not registration)
 - Modify: `src/transport.ts` (surface `WWW-Authenticate: insufficient_scope` on the resulting error — actually surfaced via the tool result itself, see below)
 - Test: `test/scope-gating.test.ts`
 
 **Interfaces:** `registerTools`'s behavior changes — this is a deliberate design reversal from the prior plan (confirmed with the repo owner): tools are no longer hidden from `tools/list` based on scope. **Read this whole task before starting — it changes tested, working behavior; don't guess at the intended shape.**
 
-**Design decision:** the spec's runtime insufficient-scope flow is an HTTP-level `403` with a `WWW-Authenticate: Bearer error="insufficient_scope", scope="...", resource_metadata="..."` challenge — but a single `POST /mcp` request can be a JSON-RPC batch or a single `tools/call`, and the *transport* only sees one HTTP response for the whole request. The practical shape that fits this architecture: **register every tool regardless of scope** (so `tools/list` shows the client what exists — this is the part that actually enables discovery, which is the whole point of the spec's step-up flow) **and reject the call at dispatch time with an `isError` tool result whose text names the missing scope**, AND **additionally send the HTTP-level 403 with the `insufficient_scope` `WWW-Authenticate` challenge when the ENTIRE request was a single `tools/call` for an ungranted tool** (the common case — a batch containing a mix of granted/ungranted calls can't cleanly map to one HTTP status, so that case falls back to the JSON-RPC-level `isError` result only, which is still spec-legal — the 403 challenge is a "SHOULD," not interpreted here as applying to every element of a batch).
+**Design decision:** the spec's runtime insufficient-scope flow is an HTTP-level `403` with a `WWW-Authenticate: Bearer error="insufficient_scope", scope="...", resource_metadata="..."` challenge — but a single `POST /mcp` request can be a JSON-RPC batch or a single `tools/call`, and the _transport_ only sees one HTTP response for the whole request. The practical shape that fits this architecture: **register every tool regardless of scope** (so `tools/list` shows the client what exists — this is the part that actually enables discovery, which is the whole point of the spec's step-up flow) **and reject the call at dispatch time with an `isError` tool result whose text names the missing scope**, AND **additionally send the HTTP-level 403 with the `insufficient_scope` `WWW-Authenticate` challenge when the ENTIRE request was a single `tools/call` for an ungranted tool** (the common case — a batch containing a mix of granted/ungranted calls can't cleanly map to one HTTP status, so that case falls back to the JSON-RPC-level `isError` result only, which is still spec-legal — the 403 challenge is a "SHOULD," not interpreted here as applying to every element of a batch).
 
 This means: `handleMcpRequest` needs to peek at the parsed body to detect "is this a single non-batch `tools/call` for an ungranted tool" BEFORE dispatching to the SDK transport, since the SDK transport itself has no concept of scopes. Do this check the same way Task 6 already parses the body once — don't parse it a third time; if Task 6 already exists on this branch when you start, extend its checkpoint rather than adding a separate parse.
 
@@ -1073,10 +1091,7 @@ Add to `test/scope-gating.test.ts` (or extend its existing structure — read th
 
 ```typescript
 describe("insufficient_scope — 403 step-up flow", () => {
-  const scopes = [
-    { name: "account:read", default: true },
-    { name: "write" },
-  ];
+  const scopes = [{ name: "account:read", default: true }, { name: "write" }];
   const writeTool = {
     name: "delete_thing",
     description: "delete",
@@ -1284,36 +1299,33 @@ function registerUngrantedMutatingTool(server: McpServer, tool: MutatingToolDef)
 Now, `src/transport.ts` — detect the "single non-batch `tools/call` for an ungranted tool" case and return the HTTP 403 directly, BEFORE dispatching to the SDK transport (since the SDK has no scope concept and would otherwise return 200 with the `isError` body from above — which is still correct MCP-JSON-RPC-wise, but doesn't satisfy the spec's HTTP-level 403 SHOULD for the common single-call case). Add this check after the `ctx`/`auth` are established, reusing Task 6's parsed body if that task landed first on this branch — otherwise parse once here:
 
 ```typescript
-  // Spec SHOULD: a single (non-batch) tools/call for a tool the caller's scopes don't
-  // grant gets the HTTP-level 403 insufficient_scope challenge, in addition to (not
-  // instead of) the isError tool result registry.ts already returns — a batch request or
-  // any other method falls through to the normal 200 JSON-RPC dispatch, where per-call
-  // scope handling in registry.ts still applies.
-  let parsedForScopeCheck: { method?: unknown; params?: { name?: unknown } } | null = null;
-  try {
-    parsedForScopeCheck = JSON.parse(requestBody);
-  } catch {
-    parsedForScopeCheck = null;
+// Spec SHOULD: a single (non-batch) tools/call for a tool the caller's scopes don't
+// grant gets the HTTP-level 403 insufficient_scope challenge, in addition to (not
+// instead of) the isError tool result registry.ts already returns — a batch request or
+// any other method falls through to the normal 200 JSON-RPC dispatch, where per-call
+// scope handling in registry.ts still applies.
+let parsedForScopeCheck: { method?: unknown; params?: { name?: unknown } } | null = null;
+try {
+  parsedForScopeCheck = JSON.parse(requestBody);
+} catch {
+  parsedForScopeCheck = null;
+}
+if (
+  parsedForScopeCheck &&
+  !Array.isArray(parsedForScopeCheck) &&
+  parsedForScopeCheck.method === "tools/call" &&
+  typeof parsedForScopeCheck.params?.name === "string"
+) {
+  const calledTool = deps.tools.find((t) => t.name === parsedForScopeCheck!.params!.name);
+  if (calledTool?.scope && !auth.scopes.includes(calledTool.scope)) {
+    return Response.json(jsonRpcError(JSON_RPC_ERROR.INSUFFICIENT_SCOPE, "Insufficient scope"), {
+      status: 403,
+      headers: {
+        "WWW-Authenticate": `Bearer error="insufficient_scope", scope="${calledTool.scope}", resource_metadata="${resourceMetadataUrl}"`,
+      },
+    });
   }
-  if (
-    parsedForScopeCheck &&
-    !Array.isArray(parsedForScopeCheck) &&
-    parsedForScopeCheck.method === "tools/call" &&
-    typeof parsedForScopeCheck.params?.name === "string"
-  ) {
-    const calledTool = deps.tools.find((t) => t.name === parsedForScopeCheck!.params!.name);
-    if (calledTool?.scope && !auth.scopes.includes(calledTool.scope)) {
-      return Response.json(
-        jsonRpcError(JSON_RPC_ERROR.INSUFFICIENT_SCOPE, "Insufficient scope"),
-        {
-          status: 403,
-          headers: {
-            "WWW-Authenticate": `Bearer error="insufficient_scope", scope="${calledTool.scope}", resource_metadata="${resourceMetadataUrl}"`,
-          },
-        },
-      );
-    }
-  }
+}
 ```
 
 Place this block after `ctx` is built (so `auth.scopes` is available) but before the `McpServer`/transport are constructed. Add `INSUFFICIENT_SCOPE: -32021` to `JSON_RPC_ERROR` (next slot after `HEADER_MISMATCH: -32020`, matching the spec's allocation policy).
@@ -1336,6 +1348,7 @@ git commit -m "feat(mcp): insufficient_scope 403 step-up flow — list all tools
 ### Task 8: Fix `ctx.env` — real bug, currently always `undefined`
 
 **Files:**
+
 - Modify: `src/server.ts` (if not already done as part of Task 1's Step 3 — confirm before duplicating)
 - Modify: `src/config.ts` (doc comment)
 - Test: `test/server.read-tools.test.ts`
@@ -1418,13 +1431,13 @@ In `src/server.ts`, confirm the `/mcp` handler passes `env: c.env` (not `env: un
 In `src/config.ts`, update the `ToolContext.env` doc comment to be accurate for all runtimes, not just Cloudflare:
 
 ```typescript
-  /**
-   * The Hono request's `c.env` — Cloudflare Worker bindings when deployed there, or
-   * whatever your Hono adapter supplies for other runtimes (often `undefined`/empty on
-   * Node, Lambda, Vercel unless you've typed your own Hono `Env` generic). Cast to your
-   * own type.
-   */
-  env: unknown;
+/**
+ * The Hono request's `c.env` — Cloudflare Worker bindings when deployed there, or
+ * whatever your Hono adapter supplies for other runtimes (often `undefined`/empty on
+ * Node, Lambda, Vercel unless you've typed your own Hono `Env` generic). Cast to your
+ * own type.
+ */
+env: unknown;
 ```
 
 - [ ] **Step 4: Run test to verify it passes**
@@ -1444,6 +1457,7 @@ git commit -m "fix(server): thread real c.env through to ToolContext.env (was al
 ### Task 9: Fix the appointments example + `deploy.md`'s Cloudflare example
 
 **Files:**
+
 - Modify: `examples/appointments/server.ts`, `examples/appointments/run.ts`, `examples/appointments/README.md`
 - Modify: `docs/deploy.md` (Cloudflare Workers section)
 
@@ -1506,7 +1520,7 @@ export default {
       scopes: [{ name: "account:read", default: true }],
       identity: {
         fields: [{ name: "email", label: "Email", type: "email", required: true }],
-        verify: async (fields) => (await isValidUser(fields.email)) ? fields.email : null,
+        verify: async (fields) => ((await isValidUser(fields.email)) ? fields.email : null),
       },
       tools,
     });
@@ -1515,7 +1529,7 @@ export default {
 } satisfies ExportedHandler<Env>;
 ```
 
-(`isValidUser` is illustrative — same convention as the rest of this doc's examples, which call out to an unspecified `db`/lookup function. Task 12 addresses making `how-to-use.md`'s samples runnable; this file's samples are explicitly deployment *sketches*, not a copy-paste tutorial, so illustrative calls are acceptable here as long as they're clearly named as such — don't invent a fake `db` global.)
+(`isValidUser` is illustrative — same convention as the rest of this doc's examples, which call out to an unspecified `db`/lookup function. Task 12 addresses making `how-to-use.md`'s samples runnable; this file's samples are explicitly deployment _sketches_, not a copy-paste tutorial, so illustrative calls are acceptable here as long as they're clearly named as such — don't invent a fake `db` global.)
 
 - [ ] **Step 5: Run the full suite**
 
@@ -1534,6 +1548,7 @@ git commit -m "fix(examples): appointments baseUrl now matches where it actually
 ### Task 10: README fixes bundle
 
 **Files:**
+
 - Modify: `README.md`
 
 **Interfaces:** None — docs only.
@@ -1542,13 +1557,15 @@ Seven independent corrections to the same file:
 
 - [ ] **Step 1: Add `zod` to the peer-dependency install line**
 
-```markdown
+````markdown
 Peer dependencies (not bundled):
 
 ```bash
 npm install hono @modelcontextprotocol/sdk zod
 ```
-```
+````
+
+````
 
 - [ ] **Step 2: Add a Node/ESM note near Install**
 
@@ -1557,7 +1574,7 @@ After the peer-dependency block:
 ```markdown
 Node **22+** is required, and your project must be ESM (`"type": "module"` in
 `package.json`) — the package publishes an ESM-only `exports` map with no `require` condition.
-```
+````
 
 - [ ] **Step 3: Fix `renderAuthorizePage`'s documented signature**
 
@@ -1577,7 +1594,7 @@ Same section:
 
 - [ ] **Step 5: Remove the sub-path-mounting self-contradiction**
 
-The "Endpoints mounted by `createMcpServer`" section states the app must be served at the origin root; "Advanced / low-level API" offers the low-level pieces for "sub-path mounting" as if it were supported. Fix the low-level API section's framing — it's for composing a *custom app*, not for mounting under a prefix (which breaks discovery regardless of which API layer you use):
+The "Endpoints mounted by `createMcpServer`" section states the app must be served at the origin root; "Advanced / low-level API" offers the low-level pieces for "sub-path mounting" as if it were supported. Fix the low-level API section's framing — it's for composing a _custom app_, not for mounting under a prefix (which breaks discovery regardless of which API layer you use):
 
 ```markdown
 Reach for these when you need to compose your own Hono app — custom middleware, a custom
@@ -1593,7 +1610,7 @@ In the "OAuth / PKCE client flow" section, add a note before the numbered list:
 
 ```markdown
 > **Transport vs. authorization spec version.** This kit's authorization surface (discovery,
-> DCR/CIMD, PKCE, tokens) targets MCP 2026-07-28. Its MCP *transport* layer is built on
+> DCR/CIMD, PKCE, tokens) targets MCP 2026-07-28. Its MCP _transport_ layer is built on
 > `@modelcontextprotocol/sdk` `^1`, which implements the `2025-11-25` wire protocol (no
 > `2026-07-28`-only features like `server/discover` or `resultType`) — a fully
 > `2026-07-28`-compliant client that sends `MCP-Protocol-Version: 2026-07-28` will fall back
@@ -1607,7 +1624,7 @@ In the "OAuth / PKCE client flow" section, add a note before the numbered list:
 Add a row to the Config reference table (after `allowClientIdMetadataDocuments`, matching Task 1):
 
 ```markdown
-| `allowedOrigins`                 | `string[]`                          | No       | Exact-match allowlist for the browser `Origin` header on `POST /mcp` (DNS-rebinding protection). Requests with no `Origin` header are always allowed; a request WITH one is rejected unless it's in this list. |
+| `allowedOrigins` | `string[]` | No | Exact-match allowlist for the browser `Origin` header on `POST /mcp` (DNS-rebinding protection). Requests with no `Origin` header are always allowed; a request WITH one is rejected unless it's in this list. |
 ```
 
 - [ ] **Step 8: Fix the stale scope-gating description (Task 7 changed this behavior)**
@@ -1646,6 +1663,7 @@ git commit -m "docs(readme): fix peer deps, ESM note, API signatures, sub-path c
 ### Task 11: `deploy.md` fixes bundle
 
 **Files:**
+
 - Modify: `docs/deploy.md`
 
 **Interfaces:** None — docs only. (The Cloudflare Workers section's env-access fix is Task 9, Step 4 — don't redo it here; this task covers the OTHER three `deploy.md` findings.)
@@ -1667,7 +1685,7 @@ Node, Lambda, and Vercel examples currently omit `identity`, producing a server 
 
 The current example mounts everything under `app/api/[[...route]]/route.ts`, which serves at `/api/*` — violating this same file's origin-root rule three paragraphs up. Add a `vercel.json` alongside the code block with an explanation:
 
-```markdown
+````markdown
 Vercel Functions live under `/api` by default, which conflicts with the origin-root
 requirement stated above. Add rewrites so the well-known and OAuth paths resolve at the
 root while the function itself stays at its normal Vercel location:
@@ -1685,7 +1703,9 @@ root while the function itself stays at its normal Vercel location:
   ]
 }
 ```
-```
+````
+
+````
 
 Place this markdown block immediately after the existing Vercel code sample, before the "For the `"nodejs"` runtime..." paragraph.
 
@@ -1698,7 +1718,7 @@ Use any `KvLike` implementation. **The in-memory adapter is for local developmen
 even a single production process restarts, loses state, and (if ever scaled to more than
 one instance) won't share state across them.** Use the Redis or Postgres adapter from
 [docs/storage-adapters.md](storage-adapters.md) for anything beyond local dev.
-```
+````
 
 - [ ] **Step 4: Verify and commit**
 
@@ -1714,6 +1734,7 @@ git commit -m "docs(deploy): add identity to all examples, fix Vercel origin-roo
 ### Task 12: `how-to-use.md` fixes bundle
 
 **Files:**
+
 - Modify: `docs/how-to-use.md`
 
 **Interfaces:** None — docs only.
@@ -1765,9 +1786,9 @@ Add a note right before the section 7 code block:
 
 - [ ] **Step 4: Document the two-phase confirm wire contract precisely**
 
-Section 6 explains the *why* well but not the exact response shapes. Add a subsection after the existing code block, before section 7:
+Section 6 explains the _why_ well but not the exact response shapes. Add a subsection after the existing code block, before section 7:
 
-```markdown
+````markdown
 ### The exact preview → confirm wire shapes
 
 The preview call's result carries both `content[0].text` (JSON-encoded, for clients that
@@ -1780,6 +1801,7 @@ only read `content`) and `structuredContent` (for clients that read it directly)
   "confirmationToken": "<opaque single-use token>"
 }
 ```
+````
 
 Call `confirm_request` with that token:
 
@@ -1796,7 +1818,8 @@ caller's scope-granted set** — if none of your mutating tools are visible to a
 `confirm_request` is still conditional on grant, even though the mutating tools themselves
 are now always listed — see the README's scope-gating section), `confirm_request` won't
 appear in that caller's `tools/list` either.
-```
+
+`````
 
 - [ ] **Step 5: Correct and expand the custom-identity section with a real example**
 
@@ -1847,11 +1870,12 @@ app.get("/my-custom-authorize", async (c) => {
   if (state) location.searchParams.set("state", state);
   return c.redirect(location.toString(), 302);
 });
-```
+`````
 
 The MCP transport (`POST /mcp`) and tool registration are unaffected by this — mount them
 exactly as `createMcpServer` does internally (see its source for the six-line wiring), or
 just call `handleMcpRequest` directly per the README's low-level API reference.
+
 ````
 
 - [ ] **Step 6: Fix the stale scope-gating description (Task 7 changed this behavior)**
@@ -2024,3 +2048,4 @@ Confirm the published version on npm afterward (`npm view mcp-oauth-kit version`
 **Type consistency:** `McpServerConfig.allowedOrigins` (Task 1) → `McpRequestDeps.allowedOrigins` (Task 1) → `server.ts`'s `/mcp` handler (Task 1). `ClientIdMetadata.maxAgeSeconds` (Task 5) → consumed in `provider.ts`'s `resolveClientRedirectUris` (Task 5). `JSON_RPC_ERROR` gains `ORIGIN_NOT_ALLOWED: -32003` (Task 1), `HEADER_MISMATCH: -32020` (Task 6), `INSUFFICIENT_SCOPE: -32021` (Task 7) — sequential, non-colliding, matching the spec's error-code allocation policy discussed in the prior plan's final review. `registerTools`'s new `registerUngrantedMutatingTool` helper (Task 7) is called exactly once, from the one branch that needs it.
 
 **Cross-task file collisions:** `src/server.ts` is touched by Tasks 1, 4, and 8 — Task 1's step already includes Task 8's `env: c.env` change as a drive-by (both note this explicitly); Task 4 adds `assertHttpsBaseUrl` at the top of the same function but doesn't touch the `/mcp` handler body, so no line-level collision. `src/transport.ts` is touched by Tasks 1, 6, and 7 — sequential, each adding a distinct check to `handleMcpRequest`'s top; Task 7's design note explicitly says to reuse Task 6's parsed body if it already landed, to avoid a third duplicate `JSON.parse`. `src/oauth/discovery.ts` is touched only by Task 2 — no collision. Execute tasks in the numbered order to keep these dependencies resolved in sequence.
+````

@@ -30,7 +30,7 @@ export default {
       scopes: [{ name: "account:read", default: true }],
       identity: {
         fields: [{ name: "email", label: "Email", type: "email", required: true }],
-        verify: async (fields) => (await isValidUser(fields.email)) ? fields.email : null,
+        verify: async (fields) => ((await isValidUser(fields.email)) ? fields.email : null),
       },
       tools,
     });
@@ -73,7 +73,7 @@ const app = createMcpServer({
   scopes: [{ name: "account:read", default: true }],
   identity: {
     fields: [{ name: "email", label: "Email", type: "email", required: true }],
-    verify: async (fields) => (await isValidUser(fields.email)) ? fields.email : null,
+    verify: async (fields) => ((await isValidUser(fields.email)) ? fields.email : null),
   },
   tools,
 });
@@ -106,7 +106,7 @@ const app = createMcpServer({
   scopes: [{ name: "account:read", default: true }],
   identity: {
     fields: [{ name: "email", label: "Email", type: "email", required: true }],
-    verify: async (fields) => (await isValidUser(fields.email)) ? fields.email : null,
+    verify: async (fields) => ((await isValidUser(fields.email)) ? fields.email : null),
   },
   tools,
 });
@@ -136,7 +136,7 @@ const app = createMcpServer({
   scopes: [{ name: "account:read", default: true }],
   identity: {
     fields: [{ name: "email", label: "Email", type: "email", required: true }],
-    verify: async (fields) => (await isValidUser(fields.email)) ? fields.email : null,
+    verify: async (fields) => ((await isValidUser(fields.email)) ? fields.email : null),
   },
   tools,
 });

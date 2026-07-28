@@ -209,10 +209,7 @@ describe("scope gating (integration via HTTP)", () => {
 // ─── insufficient_scope 403 step-up flow ───────────────────────────────────
 
 describe("insufficient_scope — 403 step-up flow", () => {
-  const scopes = [
-    { name: "account:read", default: true },
-    { name: "write" },
-  ];
+  const scopes = [{ name: "account:read", default: true }, { name: "write" }];
   const writeTool = {
     name: "delete_thing",
     description: "delete",

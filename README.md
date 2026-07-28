@@ -99,7 +99,7 @@ See `examples/appointments/server.ts` for a complete working server.
 | `hooks`                          | `ObservabilityHooks`                | No       | Async callbacks for tool calls, OAuth lifecycle events, and mutation audit.                                                                                                                                                                                         |
 | `ipExtractor`                    | `(req: Request) => string`          | No       | Override how the trusted client IP is derived for per-IP rate limiting (see below).                                                                                                                                                                                 |
 | `allowClientIdMetadataDocuments` | `boolean`                           | No       | Resolve unregistered `https://` client_ids as [Client ID Metadata Documents](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization) instead of requiring Dynamic Client Registration. Off by default (see "OAuth / PKCE client flow" below). |
-| `allowedOrigins`                 | `string[]`                          | No       | Exact-match allowlist for the browser `Origin` header on `POST /mcp` (DNS-rebinding protection). Requests with no `Origin` header are always allowed; a request WITH one is rejected unless it's in this list. |
+| `allowedOrigins`                 | `string[]`                          | No       | Exact-match allowlist for the browser `Origin` header on `POST /mcp` (DNS-rebinding protection). Requests with no `Origin` header are always allowed; a request WITH one is rejected unless it's in this list.                                                      |
 
 ### `ScopeConfig`
 
@@ -279,7 +279,7 @@ All request bodies — OAuth endpoints and `POST /mcp` — are capped at **1 MB*
 ## OAuth / PKCE client flow
 
 > **Transport vs. authorization spec version.** This kit's authorization surface (discovery,
-> DCR/CIMD, PKCE, tokens) targets MCP 2026-07-28. Its MCP *transport* layer is built on
+> DCR/CIMD, PKCE, tokens) targets MCP 2026-07-28. Its MCP _transport_ layer is built on
 > `@modelcontextprotocol/sdk` `^1`, which implements the `2025-11-25` wire protocol (no
 > `2026-07-28`-only features like `server/discover` or `resultType`) — a fully
 > `2026-07-28`-compliant client that sends `MCP-Protocol-Version: 2026-07-28` will fall back
