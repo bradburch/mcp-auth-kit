@@ -386,6 +386,12 @@ export function createOAuthProvider(config: OAuthProviderConfig): OAuthProvider 
       if (isExpired(tokenData.createdAt, TTL.ACCESS_TOKEN)) {
         return null;
       }
+      // Defense-in-depth audience check (RFC 8707 §2) — redundant with issue-time binding
+      // under normal operation, but guards against a KV namespace ever being shared across
+      // two servers built with this kit.
+      if (tokenData.resource && tokenData.resource !== expectedResource) {
+        return null;
+      }
       return { userId: tokenData.userId, scopes: tokenData.scope };
     },
 

@@ -46,6 +46,10 @@ from the default Cloudflare-KV-style storage backend, which has no compare-and-s
   brute-force guards can be bypassed with a spoofed header.
 - **In-memory storage is for tests only.** `createMemoryStorage()` is not persistent or
   shared across isolates; never use it in production.
+- **Storage keys are not namespaced by `baseUrl`.** If two servers built with this kit
+  share one KV namespace, a token/client/code issued by one is resolvable by the other
+  (all keys are `mcp:<kind>:<hash>`, with no per-deployment prefix). Use a separate KV
+  namespace/database per deployment, or don't share storage across distinct `baseUrl`s.
 
 Reports that depend on misconfiguring these (e.g. using memory storage in production, or
 running off-Cloudflare without an `ipExtractor`) are out of scope.

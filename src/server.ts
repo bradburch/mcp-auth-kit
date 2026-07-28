@@ -23,11 +23,24 @@ function methodNotAllowed(message: string): Response {
   return Response.json(jsonRpcError(JSON_RPC_ERROR.METHOD_NOT_ALLOWED, message), { status: 405 });
 }
 
+/** Security-considerations: "All authorization server endpoints MUST be served over HTTPS." */
+function assertHttpsBaseUrl(baseUrl: string): void {
+  const url = new URL(baseUrl);
+  const isLocal = url.hostname === "localhost" || url.hostname === "127.0.0.1";
+  if (url.protocol !== "https:" && !isLocal) {
+    throw new Error(
+      `baseUrl must be https:// (got "${baseUrl}") — http is only allowed for localhost/127.0.0.1 during local development.`,
+    );
+  }
+}
+
 /**
  * Build the runnable MCP server as a Hono app. Mounts discovery + OAuth routes and the
  * MCP transport. The caller owns feature-gating (wrap with their own middleware if desired).
  */
 export function createMcpServer(config: McpServerConfig): Hono {
+  assertHttpsBaseUrl(config.baseUrl);
+
   const app = new Hono();
 
   const provider = createOAuthProvider({

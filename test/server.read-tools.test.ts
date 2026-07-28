@@ -65,3 +65,49 @@ describe("createMcpServer read tools", () => {
     expect(res.status).toBe(401);
   });
 });
+
+describe("createMcpServer — baseUrl validation", () => {
+  it("throws when baseUrl is not https and not localhost", () => {
+    expect(() =>
+      createMcpServer({
+        baseUrl: "http://example.com",
+        storage: createMemoryStorage(),
+        scopes: [{ name: "account:read", default: true }],
+        tools: [],
+      }),
+    ).toThrow(/https/i);
+  });
+
+  it("allows http for localhost (dev)", () => {
+    expect(() =>
+      createMcpServer({
+        baseUrl: "http://localhost:3000",
+        storage: createMemoryStorage(),
+        scopes: [{ name: "account:read", default: true }],
+        tools: [],
+      }),
+    ).not.toThrow();
+  });
+
+  it("allows http for 127.0.0.1 (dev)", () => {
+    expect(() =>
+      createMcpServer({
+        baseUrl: "http://127.0.0.1:3000",
+        storage: createMemoryStorage(),
+        scopes: [{ name: "account:read", default: true }],
+        tools: [],
+      }),
+    ).not.toThrow();
+  });
+
+  it("allows https always", () => {
+    expect(() =>
+      createMcpServer({
+        baseUrl: "https://mcp.example.com",
+        storage: createMemoryStorage(),
+        scopes: [{ name: "account:read", default: true }],
+        tools: [],
+      }),
+    ).not.toThrow();
+  });
+});
