@@ -43,12 +43,17 @@ function headerMismatch(req: Request, requestBody: string): boolean {
   const mcpName = req.headers.get("Mcp-Name");
   if (mcpMethod === null && mcpName === null) return false;
 
-  let parsed: { method?: unknown; params?: { name?: unknown } };
+  let parsedRaw: unknown;
   try {
-    parsed = JSON.parse(requestBody);
+    parsedRaw = JSON.parse(requestBody);
   } catch {
     return false; // let the SDK's own JSON-RPC parse-error handling take over
   }
+  // A bare null/array/scalar isn't a JSON-RPC request shape — treat it the same as
+  // unparseable and let the SDK transport reject it downstream (mirrors the same guard
+  // in oauth/routes.ts's readBodyParsed).
+  if (parsedRaw === null || typeof parsedRaw !== "object") return false;
+  const parsed = parsedRaw as { method?: unknown; params?: { name?: unknown } };
 
   if (mcpMethod !== null && parsed.method !== mcpMethod) return true;
   if (mcpName !== null && parsed.method === "tools/call" && parsed.params?.name !== mcpName) {

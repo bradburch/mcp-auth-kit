@@ -177,6 +177,8 @@ describe("POST /mcp — Mcp-Method / Mcp-Name header validation", () => {
       }),
     });
     expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error.code).toBe(-32020);
   });
 
   it("allows a matching Mcp-Method/Mcp-Name pair through", async () => {
@@ -215,6 +217,36 @@ describe("POST /mcp — Mcp-Method / Mcp-Name header validation", () => {
       }),
     });
     expect(res.status).toBe(200);
+  });
+
+  it("does not throw when the body is the literal JSON `null` and a header is present", async () => {
+    const app = createMcpServer({
+      baseUrl,
+      storage: createMemoryStorage(),
+      scopes: [{ name: "account:read", default: true }],
+      identity: {
+        fields: [{ name: "email", label: "Email" }],
+        verify: async () => "user-1",
+      },
+      tools: [],
+    });
+    const token = await getToken(app);
+    const res = await app.request("/mcp", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${token}`,
+        "content-type": "application/json",
+        accept: "application/json, text/event-stream",
+        "mcp-method": "tools/list",
+      },
+      body: "null",
+    });
+    // `null` is valid JSON but not a valid JSON-RPC request — headerMismatch must not throw;
+    // the SDK transport's own JSON-RPC validation handles the malformed shape and rejects it
+    // with a standard JSON-RPC parse error, not our HEADER_MISMATCH code.
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error.code).toBe(-32700);
   });
 
   it("allows a request with no Mcp-Method/Mcp-Name headers at all (older clients)", async () => {
