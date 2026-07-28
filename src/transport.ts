@@ -23,6 +23,7 @@ export const JSON_RPC_ERROR = {
   RATE_LIMITED: -32002,
   ORIGIN_NOT_ALLOWED: -32003,
   HEADER_MISMATCH: -32020, // matches the MCP 2026-07-28 error-code allocation policy
+  INSUFFICIENT_SCOPE: -32021, // matches the MCP 2026-07-28 error-code allocation policy
   INTERNAL: -32603,
 } as const;
 
@@ -160,6 +161,37 @@ export async function handleMcpRequest(req: Request, deps: McpRequestDeps): Prom
     env: deps.env,
     hooks: deps.hooks,
   };
+
+  // Spec SHOULD: a single (non-batch) tools/call for a tool the caller's scopes don't
+  // grant gets the HTTP-level 403 insufficient_scope challenge, in addition to (not
+  // instead of) the isError tool result registry.ts already returns — a batch request or
+  // any other method falls through to the normal 200 JSON-RPC dispatch, where per-call
+  // scope handling in registry.ts still applies.
+  let parsedForScopeCheck: { method?: unknown; params?: { name?: unknown } } | null = null;
+  try {
+    parsedForScopeCheck = JSON.parse(requestBody);
+  } catch {
+    parsedForScopeCheck = null;
+  }
+  if (
+    parsedForScopeCheck &&
+    !Array.isArray(parsedForScopeCheck) &&
+    parsedForScopeCheck.method === "tools/call" &&
+    typeof parsedForScopeCheck.params?.name === "string"
+  ) {
+    const calledTool = deps.tools.find((t) => t.name === parsedForScopeCheck!.params!.name);
+    if (calledTool?.scope && !auth.scopes.includes(calledTool.scope)) {
+      return Response.json(
+        jsonRpcError(JSON_RPC_ERROR.INSUFFICIENT_SCOPE, "Insufficient scope"),
+        {
+          status: 403,
+          headers: {
+            "WWW-Authenticate": `Bearer error="insufficient_scope", scope="${calledTool.scope}", resource_metadata="${resourceMetadataUrl}"`,
+          },
+        },
+      );
+    }
+  }
 
   // Fresh server + stateless JSON transport for this request.
   const server = new McpServer({
