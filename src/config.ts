@@ -139,4 +139,10 @@ export interface McpServerConfig {
    * deployed behind Cloudflare so an attacker can't spoof a header to reset buckets.
    */
   ipExtractor?: (req: Request) => string;
+  /**
+   * Resolve unregistered HTTPS client_ids as OAuth Client ID Metadata Documents instead of
+   * requiring Dynamic Client Registration (MCP 2026-07-28; DCR is now deprecated in the spec
+   * but still fully supported here). Off by default.
+   */
+  allowClientIdMetadataDocuments?: boolean;
 }

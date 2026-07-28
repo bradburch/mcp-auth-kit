@@ -232,6 +232,16 @@ curl -s -X POST $BASE/mcp \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"whoami","arguments":{}}}' | jq
 ```
 
+> **`iss` on the redirect.** Step (c)'s 302 now also carries `&iss=<baseUrl>` (RFC 9207) —
+> a compliant client checks this matches the issuer it expects before proceeding, to catch
+> an authorization-server mix-up. The `sed` extraction above only pulls `code`, so it's
+> unaffected; a real client parses the full redirect URL.
+
+> **Client ID Metadata Documents.** Step (b) shows Dynamic Client Registration. If the
+> server has `allowClientIdMetadataDocuments: true`, you can skip registration entirely and
+> use an `https://` URL (hosting a `{ client_id, redirect_uris, ... }` JSON document) as
+> `CLIENT_ID` directly — see the Config reference in the README.
+
 In a real MCP client (Claude, an IDE plugin, etc.) you just point it at `http://localhost:3000`
 and it performs steps (a)–(e) for you.
 
@@ -258,6 +268,10 @@ A throwing hook never fails the request.
 - [ ] **Set the trusted client-IP source if you're _not_ behind Cloudflare.** Pass
       `ipExtractor` so per-IP rate limits can't be bypassed with a spoofed header (see the
       README's RateLimitConfig section).
+- [ ] **Decide on `allowClientIdMetadataDocuments`.** Off by default. Turning it on lets
+      unregistered HTTPS `client_id`s authorize by hosting a metadata document — an
+      outbound-fetch surface at authorization time. Leave it off unless you have clients
+      that need it.
 - [ ] **Tune `rateLimits`** for your traffic (defaults: 50 tool calls/user/hr, 10
       authorize/IP/hr, 30 token+register+revoke/IP/hr).
 - [ ] **Pick your deployment adapter** ([deploy.md](deploy.md): Workers, Node, Lambda, Vercel).

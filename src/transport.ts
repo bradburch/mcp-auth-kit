@@ -39,6 +39,8 @@ export interface McpRequestDeps {
   serverVersion: string;
   env: unknown;
   hooks: ObservabilityHooks;
+  /** Scopes granted when a client requests none — hinted in the 401 WWW-Authenticate (RFC 6750 §3). */
+  defaultScopes: string[];
 }
 
 /**
@@ -56,7 +58,11 @@ export async function handleMcpRequest(req: Request, deps: McpRequestDeps): Prom
 
   // RFC 9728: tell clients where to discover OAuth endpoints on a 401.
   const resourceMetadataUrl = `${deps.baseUrl}/.well-known/oauth-protected-resource`;
-  const wwwAuthenticate = `Bearer resource_metadata="${resourceMetadataUrl}"`;
+  // RFC 6750 §3 / MCP 2026-07-28 Authorization spec: hint the scopes needed so
+  // clients don't have to guess before their first authorization attempt.
+  const scopeAttr =
+    deps.defaultScopes.length > 0 ? `, scope="${deps.defaultScopes.join(" ")}"` : "";
+  const wwwAuthenticate = `Bearer resource_metadata="${resourceMetadataUrl}"${scopeAttr}`;
   const unauthorized = () =>
     Response.json(jsonRpcError(JSON_RPC_ERROR.AUTH_REQUIRED, "Authentication required"), {
       status: 401,
