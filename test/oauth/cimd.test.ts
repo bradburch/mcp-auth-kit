@@ -87,4 +87,63 @@ describe("fetchClientIdMetadata", () => {
     );
     expect(await fetchClientIdMetadata(clientId)).toBeNull();
   });
+
+  it("blocks IPv6 loopback [::1] without making a request", async () => {
+    const fetchSpy = vi.fn();
+    vi.stubGlobal("fetch", fetchSpy);
+    expect(await fetchClientIdMetadata("https://[::1]/client.json")).toBeNull();
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("blocks IPv4-mapped IPv6 private ranges without making a request", async () => {
+    const fetchSpy = vi.fn();
+    vi.stubGlobal("fetch", fetchSpy);
+    // ::ffff:192.168.1.1 is an IPv4-mapped IPv6 form pointing to private range
+    expect(await fetchClientIdMetadata("https://[::ffff:192.168.1.1]/client.json")).toBeNull();
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("blocks IPv6 link-local without making a request", async () => {
+    const fetchSpy = vi.fn();
+    vi.stubGlobal("fetch", fetchSpy);
+    expect(await fetchClientIdMetadata("https://[fe80::1]/client.json")).toBeNull();
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("times out a slow-loris body-read attack", async () => {
+    const clientId = "https://app.example.com/oauth/client.json";
+    let readerAbortCalled = false;
+
+    // Create a mock stream that never resolves (simulates slow-loris on body).
+    const mockStream = new ReadableStream({
+      start(controller) {
+        // Immediately enqueue a small chunk to avoid early EOF.
+        controller.enqueue(new TextEncoder().encode("{"));
+        // Then hang indefinitely — no more chunks, no close.
+      },
+      cancel() {
+        readerAbortCalled = true;
+      },
+    });
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(mockStream, { status: 200 }) as Response,
+      ),
+    );
+
+    // Should timeout after 3000ms and return null without hanging forever.
+    const result = await Promise.race([
+      fetchClientIdMetadata(clientId),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error("Test timeout: fetchClientIdMetadata hung")), 5000),
+      ),
+    ]);
+
+    expect(result).toBeNull();
+    // The abort controller should have cancelled the reader.
+    expect(readerAbortCalled).toBe(true);
+  });
 });

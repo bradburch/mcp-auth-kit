@@ -25,32 +25,93 @@ export interface ClientIdMetadata {
  * that resolves and filters at connect time).
  */
 function isBlockedHost(hostname: string): boolean {
-  const h = hostname.toLowerCase();
-  if (h === "localhost" || h === "0.0.0.0" || h === "::1") return true;
+  let h = hostname.toLowerCase();
+
+  // Strip IPv6 brackets if present (WHATWG URL returns '[::1]', not '::1').
+  if (h.startsWith("[") && h.endsWith("]")) {
+    h = h.slice(1, -1);
+  }
+
+  // IPv6 loopback and link-local ranges.
+  if (h === "::1" || h === "0.0.0.0" || h === "localhost") return true;
+
+  // IPv6 link-local (fe80::/10).
+  if (/^fe80:/i.test(h)) return true;
+
+  // IPv4-mapped IPv6: ::ffff:a.b.c.d (dotted form) or ::ffff:XXXX:XXXX (hex form normalized by WHATWG URL).
+  const ipv4MappedDottedMatch = h.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/i);
+  if (ipv4MappedDottedMatch) {
+    const quad = ipv4MappedDottedMatch[1];
+    if (/^127\./.test(quad)) return true;
+    if (/^10\./.test(quad)) return true;
+    if (/^192\.168\./.test(quad)) return true;
+    if (/^172\.(1[6-9]|2\d|3[01])\./.test(quad)) return true;
+    if (/^169\.254\./.test(quad)) return true;
+  }
+
+  // IPv4-mapped IPv6 in hex form (WHATWG normalization): ::ffff:XXXX:XXXX.
+  const ipv4MappedHexMatch = h.match(/^::ffff:([0-9a-f]+):([0-9a-f]+)$/i);
+  if (ipv4MappedHexMatch) {
+    const hex1 = parseInt(ipv4MappedHexMatch[1], 16);
+    const hex2 = parseInt(ipv4MappedHexMatch[2], 16);
+    const a = (hex1 >> 8) & 0xff;
+    const b = hex1 & 0xff;
+    const c = (hex2 >> 8) & 0xff;
+    const d = hex2 & 0xff;
+    const quad = `${a}.${b}.${c}.${d}`;
+    if (/^127\./.test(quad)) return true;
+    if (/^10\./.test(quad)) return true;
+    if (/^192\.168\./.test(quad)) return true;
+    if (/^172\.(1[6-9]|2\d|3[01])\./.test(quad)) return true;
+    if (/^169\.254\./.test(quad)) return true;
+  }
+
+  // IPv4 loopback, private, and link-local ranges.
   if (/^127\./.test(h)) return true;
   if (/^10\./.test(h)) return true;
   if (/^192\.168\./.test(h)) return true;
   if (/^172\.(1[6-9]|2\d|3[01])\./.test(h)) return true;
   if (/^169\.254\./.test(h)) return true;
+
   return false;
 }
 
-/** Read a Response body with a byte cap enforced while streaming. Returns null if exceeded. */
-async function readCappedText(res: Response, maxBytes: number): Promise<string | null> {
+/** Read a Response body with a byte cap enforced while streaming. Returns null if exceeded or aborted. */
+async function readCappedText(
+  res: Response,
+  maxBytes: number,
+  signal: AbortSignal,
+): Promise<string | null> {
   const body = res.body;
   if (!body) return "";
   const reader = body.getReader();
   const chunks: Uint8Array[] = [];
   let total = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    total += value.byteLength;
-    if (total > maxBytes) {
-      await reader.cancel();
-      return null;
+
+  // Create a promise that rejects if the abort signal fires, allowing us to race it against reader.read().
+  const abortPromise = new Promise<never>((_, reject) =>
+    signal.addEventListener("abort", () => reject(new Error("abort")))
+  );
+
+  try {
+    for (;;) {
+      // Race the read against abort — if abort fires, Promise.race will reject with the abortPromise.
+      const { done, value } = await Promise.race([
+        reader.read(),
+        abortPromise,
+      ]);
+      if (done) break;
+      total += value.byteLength;
+      if (total > maxBytes) {
+        await reader.cancel();
+        return null;
+      }
+      chunks.push(value);
     }
-    chunks.push(value);
+  } catch {
+    // Abort signal fired or other error; cancel reader and return null.
+    await reader.cancel();
+    return null;
   }
   const buf = new Uint8Array(total);
   let offset = 0;
@@ -81,36 +142,38 @@ export async function fetchClientIdMetadata(
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
-  let res: Response;
   try {
-    res = await fetch(url, { redirect: "error", signal: controller.signal });
-  } catch {
-    return null;
+    let res: Response;
+    try {
+      res = await fetch(url, { redirect: "error", signal: controller.signal });
+    } catch {
+      return null;
+    }
+    if (!res.ok) return null;
+
+    const text = await readCappedText(res, MAX_DOCUMENT_BYTES, controller.signal);
+    if (text === null) return null;
+
+    let doc: unknown;
+    try {
+      doc = JSON.parse(text);
+    } catch {
+      return null;
+    }
+    if (!doc || typeof doc !== "object") return null;
+    const d = doc as Record<string, unknown>;
+
+    // MUST match the fetch URL exactly (prevents a document claiming someone else's client_id).
+    if (d.client_id !== clientIdUrl) return null;
+    if (!Array.isArray(d.redirect_uris) || d.redirect_uris.length === 0) return null;
+    if (!d.redirect_uris.every((u) => typeof u === "string")) return null;
+
+    return {
+      clientId: clientIdUrl,
+      clientName: typeof d.client_name === "string" ? d.client_name : undefined,
+      redirectUris: d.redirect_uris as string[],
+    };
   } finally {
     clearTimeout(timeout);
   }
-  if (!res.ok) return null;
-
-  const text = await readCappedText(res, MAX_DOCUMENT_BYTES);
-  if (text === null) return null;
-
-  let doc: unknown;
-  try {
-    doc = JSON.parse(text);
-  } catch {
-    return null;
-  }
-  if (!doc || typeof doc !== "object") return null;
-  const d = doc as Record<string, unknown>;
-
-  // MUST match the fetch URL exactly (prevents a document claiming someone else's client_id).
-  if (d.client_id !== clientIdUrl) return null;
-  if (!Array.isArray(d.redirect_uris) || d.redirect_uris.length === 0) return null;
-  if (!d.redirect_uris.every((u) => typeof u === "string")) return null;
-
-  return {
-    clientId: clientIdUrl,
-    clientName: typeof d.client_name === "string" ? d.client_name : undefined,
-    redirectUris: d.redirect_uris as string[],
-  };
 }
