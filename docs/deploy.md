@@ -19,18 +19,23 @@ interface Env {
   KV: KVNamespace;
 }
 
-const app = createMcpServer({
-  baseUrl: "https://mcp.example.com",
-  storage: createCloudflareKvStorage(
-    // KV bindings are available on globalThis when the module initializes in Cloudflare Workers.
-    (globalThis as unknown as { KV: KVNamespace }).KV,
-  ),
-  scopes: [{ name: "account:read", default: true }],
-  tools,
-});
-
 export default {
-  fetch: (req: Request, env: Env) => app.fetch(req, env),
+  // Bindings only arrive via this `env` parameter in an ES-module Worker — build the app
+  // per-request so `createCloudflareKvStorage` gets the real KV namespace, not a
+  // module-scope value that doesn't exist yet at module-evaluation time.
+  fetch: (req: Request, env: Env) => {
+    const app = createMcpServer({
+      baseUrl: "https://mcp.example.com",
+      storage: createCloudflareKvStorage(env.KV),
+      scopes: [{ name: "account:read", default: true }],
+      identity: {
+        fields: [{ name: "email", label: "Email", type: "email", required: true }],
+        verify: async (fields) => (await isValidUser(fields.email)) ? fields.email : null,
+      },
+      tools,
+    });
+    return app.fetch(req, env);
+  },
 } satisfies ExportedHandler<Env>;
 ```
 
