@@ -145,4 +145,13 @@ export interface McpServerConfig {
    * but still fully supported here). Off by default.
    */
   allowClientIdMetadataDocuments?: boolean;
+  /**
+   * Origins allowed to send `POST /mcp` requests carrying a browser `Origin` header
+   * (DNS-rebinding protection, MCP 2026-07-28 streamable-http spec). Requests with NO
+   * Origin header (the common case — most MCP clients aren't browsers) are always
+   * allowed. A request WITH an Origin header is rejected with 403 unless it exactly
+   * matches an entry here — including when this option is omitted entirely, since an
+   * unconfigured server has no way to know which origins are legitimate.
+   */
+  allowedOrigins?: string[];
 }

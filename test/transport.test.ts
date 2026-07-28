@@ -45,3 +45,68 @@ describe("POST /mcp — 401 WWW-Authenticate", () => {
     expect(res.headers.get("WWW-Authenticate")).not.toContain("scope=");
   });
 });
+
+describe("POST /mcp — Origin validation", () => {
+  it("rejects a request with an Origin header when allowedOrigins is not configured", async () => {
+    const app = createMcpServer({
+      baseUrl,
+      storage: createMemoryStorage(),
+      scopes: [{ name: "account:read", default: true }],
+      tools: [],
+    });
+    const res = await app.request("/mcp", {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: "https://evil.example.com" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+    });
+    expect(res.status).toBe(403);
+  });
+
+  it("allows a request with no Origin header regardless of configuration", async () => {
+    const app = createMcpServer({
+      baseUrl,
+      storage: createMemoryStorage(),
+      scopes: [{ name: "account:read", default: true }],
+      tools: [],
+    });
+    const res = await app.request("/mcp", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+    });
+    // No Origin header — falls through to the normal 401 (missing auth), not 403.
+    expect(res.status).toBe(401);
+  });
+
+  it("allows a request whose Origin is in the configured allowlist", async () => {
+    const app = createMcpServer({
+      baseUrl,
+      storage: createMemoryStorage(),
+      scopes: [{ name: "account:read", default: true }],
+      tools: [],
+      allowedOrigins: ["https://claude.ai"],
+    });
+    const res = await app.request("/mcp", {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: "https://claude.ai" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+    });
+    expect(res.status).toBe(401); // past the Origin check, falls through to normal auth
+  });
+
+  it("rejects an Origin not in the configured allowlist", async () => {
+    const app = createMcpServer({
+      baseUrl,
+      storage: createMemoryStorage(),
+      scopes: [{ name: "account:read", default: true }],
+      tools: [],
+      allowedOrigins: ["https://claude.ai"],
+    });
+    const res = await app.request("/mcp", {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: "https://evil.example.com" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+    });
+    expect(res.status).toBe(403);
+  });
+});

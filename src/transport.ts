@@ -21,6 +21,7 @@ export const JSON_RPC_ERROR = {
   METHOD_NOT_ALLOWED: -32000,
   AUTH_REQUIRED: -32001,
   RATE_LIMITED: -32002,
+  ORIGIN_NOT_ALLOWED: -32003,
   INTERNAL: -32603,
 } as const;
 
@@ -41,6 +42,8 @@ export interface McpRequestDeps {
   hooks: ObservabilityHooks;
   /** Scopes granted when a client requests none — hinted in the 401 WWW-Authenticate (RFC 6750 §3). */
   defaultScopes: string[];
+  /** Exact-match allowlist for the `Origin` header — see `McpServerConfig.allowedOrigins`. */
+  allowedOrigins: string[];
 }
 
 /**
@@ -49,6 +52,17 @@ export interface McpRequestDeps {
  * and dispatch. Returns a JSON-RPC error Response on auth/rate-limit failure.
  */
 export async function handleMcpRequest(req: Request, deps: McpRequestDeps): Promise<Response> {
+  // MCP 2026-07-28 streamable-http spec: validate Origin to prevent DNS-rebinding attacks
+  // from a malicious webpage against a locally-running server. No Origin header means a
+  // non-browser client (the common case) — always allowed. An Origin header present but
+  // not in the configured allowlist (default: nothing allowed) is rejected outright.
+  const origin = req.headers.get("Origin");
+  if (origin !== null && !deps.allowedOrigins.includes(origin)) {
+    return Response.json(jsonRpcError(JSON_RPC_ERROR.ORIGIN_NOT_ALLOWED, "Origin not allowed"), {
+      status: 403,
+    });
+  }
+
   // Read the body up front (before anything else could consume the stream), with the
   // 1 MB cap enforced while streaming — a pre-auth DoS guard that never buffers an
   // unbounded chunked body into memory.
