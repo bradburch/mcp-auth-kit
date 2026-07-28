@@ -74,7 +74,12 @@ export interface ToolContext {
   userId: string;
   scopes: string[];
   storage: KvLike;
-  /** The Cloudflare Worker env bindings (adopter casts to their own type). */
+  /**
+   * The Hono request's `c.env` — Cloudflare Worker bindings when deployed there, or
+   * whatever your Hono adapter supplies for other runtimes (often `undefined`/empty on
+   * Node, Lambda, Vercel unless you've typed your own Hono `Env` generic). Cast to your
+   * own type.
+   */
   env: unknown;
   hooks: ObservabilityHooks;
 }
