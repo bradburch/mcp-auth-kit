@@ -146,4 +146,39 @@ describe("fetchClientIdMetadata", () => {
     // The abort controller should have cancelled the reader.
     expect(readerAbortCalled).toBe(true);
   });
+
+  it("does not throw even if reader.cancel() rejects on an errored stream", async () => {
+    const clientId = "https://app.example.com/oauth/client.json";
+
+    // Simulate a real errored stream where cancel() itself rejects (happens when the stream
+    // is already errored by the abort signal on real fetch implementations).
+    const mockStream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("{"));
+      },
+      cancel() {
+        // Simulate an already-errored stream where cancel() rejects (as in real fetch).
+        throw new Error("AbortError: This operation was aborted");
+      },
+    });
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(mockStream, { status: 200 }) as Response,
+      ),
+    );
+
+    // Should timeout after 3000ms and return null, NOT throw.
+    const result = await Promise.race([
+      fetchClientIdMetadata(clientId),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error("Test timeout")), 5000),
+      ),
+    ]);
+
+    // Despite cancel() rejecting, the function should still resolve to null.
+    expect(result).toBeNull();
+  });
 });

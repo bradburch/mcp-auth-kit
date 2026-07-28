@@ -109,8 +109,13 @@ async function readCappedText(
       chunks.push(value);
     }
   } catch {
-    // Abort signal fired or other error; cancel reader and return null.
-    await reader.cancel();
+    // Abort signal fired or other error; try to cancel reader and return null.
+    // On an already-errored stream (from abort), cancel() itself may reject; swallow it.
+    try {
+      await reader.cancel();
+    } catch {
+      // Cancel rejection is expected on an errored stream; ignore and fall through.
+    }
     return null;
   }
   const buf = new Uint8Array(total);
