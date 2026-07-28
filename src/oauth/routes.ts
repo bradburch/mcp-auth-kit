@@ -155,7 +155,7 @@ async function fireAudit(
  */
 export function mountOAuthRoutes(
   app: Hono,
-  { provider, identity, hooks, rateLimiter, ipExtractor }: OAuthRouteDeps,
+  { provider, identity, baseUrl, hooks, rateLimiter, ipExtractor }: OAuthRouteDeps,
 ): void {
   const clientIp = ipExtractor ?? extractClientIp;
 
@@ -377,6 +377,9 @@ export function mountOAuthRoutes(
       const location = new URL(redirectUri);
       location.searchParams.set("code", code);
       if (state) location.searchParams.set("state", state);
+      // RFC 9207 (MCP 2026-07-28 changelog item 7): echo the issuer so clients can
+      // detect a mix-up attack before redeeming the code.
+      location.searchParams.set("iss", baseUrl);
 
       return c.redirect(location.toString(), 302);
     } catch (e) {

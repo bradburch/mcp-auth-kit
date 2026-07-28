@@ -5,6 +5,7 @@ import { createMemoryStorage } from "../../src/storage/memory.js";
 import { createOAuthProvider } from "../../src/oauth/provider.js";
 import { mountOAuthRoutes } from "../../src/oauth/routes.js";
 import { mountDiscovery } from "../../src/oauth/discovery.js";
+import { pkce } from "../helpers.js";
 
 const scopes = [{ name: "account:read", default: true }];
 const baseUrl = "https://example.test";
@@ -107,5 +108,48 @@ describe("oauth routes", () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.scopes_supported).toEqual(["account:read"]);
+  });
+});
+
+// ─── RFC 9207 — iss parameter on the authorization redirect ───────────────────
+
+describe("POST /authorize — RFC 9207 iss parameter", () => {
+  it("includes iss=<baseUrl> on the success redirect", async () => {
+    const app = new Hono();
+    const provider = createOAuthProvider({ storage: createMemoryStorage(), scopes, baseUrl });
+    mountOAuthRoutes(app, {
+      provider,
+      baseUrl,
+      identity: { fields: [{ name: "email", label: "Email" }], verify: async () => "user-1" },
+    });
+
+    const reg = await (
+      await app.request("/register", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ redirect_uris: ["https://app/cb"] }),
+      })
+    ).json();
+    const { challenge } = await pkce();
+
+    const res = await app.request("/authorize", {
+      method: "POST",
+      redirect: "manual",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        response_type: "code",
+        client_id: reg.client_id,
+        redirect_uri: "https://app/cb",
+        code_challenge: challenge,
+        code_challenge_method: "S256",
+        resource: `${baseUrl}/mcp`,
+        email: "a@b.c",
+      }).toString(),
+    });
+
+    expect(res.status).toBe(302);
+    const location = new URL(res.headers.get("location")!);
+    expect(location.searchParams.get("iss")).toBe(baseUrl);
+    expect(location.searchParams.get("code")).toBeTruthy();
   });
 });
