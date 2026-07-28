@@ -19,14 +19,19 @@ All notable changes to this project are documented here. The format is based on
     a sane range) instead of a fixed TTL.
   - `application_type` (`"web" | "native"`) accepted and echoed on `POST /register` (SEP-837).
   - `scope` attribute on the 401 `WWW-Authenticate` challenge, hinting the default scopes.
-  - `Origin` header validation on the MCP transport (via a new `allowedOrigins` config
-    option), rejecting cross-origin requests to guard against DNS rebinding attacks.
+  - **Breaking:** `Origin` header validation on the MCP transport (via a new
+    `allowedOrigins` config option), rejecting cross-origin requests to guard against DNS
+    rebinding attacks. This is secure-by-default: if `allowedOrigins` is left unset, ANY
+    request carrying a browser `Origin` header is now rejected with a 403. If a
+    browser-based MCP client calls your server, you must list its origin in the new
+    `allowedOrigins` config option after upgrading.
   - `Mcp-Method`/`Mcp-Name` request headers, when present, are now validated against the
     JSON-RPC request body and rejected on mismatch — guards against an edge proxy
     routing or authorizing on the header while the server executes on the body.
 - The Protected Resource Metadata document now also advertises `scopes_supported`, and is
-  now served both at the root well-known path and at its `/mcp` sub-path (so it resolves
-  correctly when the server is mounted under a sub-path).
+  now served both at the root well-known path and at its `/mcp` sub-path (RFC 9728 ties
+  the metadata document's URI to the resource it describes, and the MCP client discovery
+  flow probes the sub-path form first).
 - The login page now displays the redirect URI's hostname ("Signing in to: ...") so users
   can verify where they're about to be redirected, with an additional warning banner when
   the redirect target is `localhost`/`127.0.0.1`.

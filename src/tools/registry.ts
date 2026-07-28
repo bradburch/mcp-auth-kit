@@ -70,8 +70,10 @@ async function fireToolCall(ctx: ToolContext, toolName: string, input: unknown):
 
 /**
  * Register EVERY configured tool onto `server`, regardless of `grantedScopes` — scope gating
- * happens at dispatch time (see file header). Mutating tools register a placeholder handler
- * (replaced in Task 9) when granted; read tools delegate to their handler when granted.
+ * happens at dispatch time (see file header). Mutating tools register via
+ * `registerMutatingTool` (two-phase preview → confirm) when granted, or via
+ * `registerUngrantedMutatingTool` (a lightweight handler that always rejects) when not;
+ * read tools delegate to their handler when granted.
  */
 export function registerTools(
   server: McpServer,

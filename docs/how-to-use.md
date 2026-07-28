@@ -175,6 +175,9 @@ app.get("/authorize", async (c) => {
   location.searchParams.set("code", code);
   const state = c.req.query("state");
   if (state) location.searchParams.set("state", state);
+  // RFC 9207: mountDiscovery advertises authorization_response_iss_parameter_supported,
+  // so a compliant client will reject a redirect that's missing this — see routes.ts.
+  location.searchParams.set("iss", baseUrl);
   return c.redirect(location.toString(), 302);
 });
 
@@ -274,12 +277,10 @@ Call `confirm_request` with that token:
 }
 ```
 
-`confirm_request` is registered **only when at least one mutating tool is present in the
-caller's scope-granted set** — if none of your mutating tools are visible to a given caller
-(prior to Task 7 of the 2026-07-28 fixes: because they were hidden by scope; as of Task 7:
-`confirm_request` is still conditional on grant, even though the mutating tools themselves
-are now always listed — see the README's scope-gating section), `confirm_request` won't
-appear in that caller's `tools/list` either.
+`confirm_request` is registered only when at least one mutating tool is granted to the
+caller; the mutating tools themselves are always listed regardless of grant — see the
+README's scope-gating section for why. So if none of your mutating tools are granted to a
+given caller, `confirm_request` won't appear in that caller's `tools/list` either.
 
 ## 7. Drive the full OAuth + MCP flow (end to end)
 

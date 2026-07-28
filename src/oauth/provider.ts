@@ -17,7 +17,9 @@ const TTL = {
   AUTH_CODE: 5 * 60, // 5 minutes
   ACCESS_TOKEN: 60 * 60, // 1 hour
   REFRESH_TOKEN: 90 * 24 * 60 * 60, // 90 days
-  CIMD_CACHE: 60 * 60, // 1 hour — bounds staleness without needing to parse Cache-Control
+  CIMD_CACHE: 60 * 60, // 1 hour — fallback used only when the fetched document sends no
+  // `Cache-Control: max-age` of its own; when it does, that (clamped) value wins instead
+  // (see cimd.ts's parseMaxAge / MIN_CACHE_SECONDS / MAX_CACHE_SECONDS).
 } as const;
 
 /** An access + refresh token pair returned to the client. */

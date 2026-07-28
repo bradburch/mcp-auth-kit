@@ -90,7 +90,7 @@ See `examples/appointments/server.ts` for a complete working server.
 
 | Field                            | Type                                | Required | Description                                                                                                                                                                                                                                                         |
 | -------------------------------- | ----------------------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `baseUrl`                        | `string`                            | Yes      | Public base URL of this server (used in OAuth discovery and redirect URIs).                                                                                                                                                                                         |
+| `baseUrl`                        | `string`                            | Yes      | Public base URL of this server (used in OAuth discovery and redirect URIs). Must be `https://` unless the hostname is `localhost`/`127.0.0.1` — the server throws at construction time otherwise.                                                                   |
 | `storage`                        | `KvLike`                            | Yes      | Key-value store for tokens, rate-limit counters, and idempotency records.                                                                                                                                                                                           |
 | `scopes`                         | `ScopeConfig[]`                     | Yes      | OAuth scopes the server advertises.                                                                                                                                                                                                                                 |
 | `identity`                       | `IdentityConfig`                    | No       | Built-in login-form identity provider. Omit to use a custom provider.                                                                                                                                                                                               |
@@ -192,7 +192,11 @@ interface ToolContext {
   userId: string;
   scopes: string[];
   storage: KvLike;
-  env: unknown; // Cloudflare Worker env bindings — cast to your own type
+  // The Hono request's `c.env` — Cloudflare Worker bindings when deployed there, or
+  // whatever your Hono adapter supplies for other runtimes (often `undefined`/empty on
+  // Node, Lambda, Vercel unless you've typed your own Hono `Env` generic). Cast to your
+  // own type.
+  env: unknown;
   hooks: ObservabilityHooks;
 }
 ```
