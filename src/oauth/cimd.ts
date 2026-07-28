@@ -2,6 +2,7 @@
 // MCP 2026-07-28 deprecates Dynamic Client Registration in favor of this: the client_id IS
 // an HTTPS URL pointing at a JSON document describing the client (see the MCP spec's
 // "Client ID Metadata Documents" section, deprecating RFC 7591 DCR per changelog item 4).
+import { isValidRedirectUri } from "./redirect-uri.js";
 
 /** Response body cap for a metadata document fetch — these are small JSON files. */
 const MAX_DOCUMENT_BYTES = 16 * 1024;
@@ -14,6 +15,22 @@ export interface ClientIdMetadata {
   clientId: string;
   clientName?: string;
   redirectUris: string[];
+}
+
+/**
+ * IPv4 loopback, RFC 1918 private, CGNAT (RFC 6598), and link-local ranges. Shared by the
+ * raw-IPv4 check below and the IPv4-mapped/compatible IPv6 check, so the range list lives
+ * in exactly one place.
+ */
+function isPrivateIPv4(quad: string): boolean {
+  if (/^127\./.test(quad)) return true;
+  if (/^10\./.test(quad)) return true;
+  if (/^192\.168\./.test(quad)) return true;
+  if (/^172\.(1[6-9]|2\d|3[01])\./.test(quad)) return true;
+  if (/^169\.254\./.test(quad)) return true;
+  if (/^0\./.test(quad)) return true; // 0.0.0.0/8
+  if (/^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(quad)) return true; // 100.64.0.0/10 CGNAT
+  return false;
 }
 
 /**
@@ -32,46 +49,32 @@ function isBlockedHost(hostname: string): boolean {
     h = h.slice(1, -1);
   }
 
-  // IPv6 loopback and link-local ranges.
-  if (h === "::1" || h === "0.0.0.0" || h === "localhost") return true;
+  // IPv6 loopback and the unspecified address (connects to loopback on Linux/macOS).
+  if (h === "::1" || h === "::" || h === "localhost") return true;
 
   // IPv6 link-local (fe80::/10).
   if (/^fe80:/i.test(h)) return true;
 
-  // IPv4-mapped IPv6: ::ffff:a.b.c.d (dotted form) or ::ffff:XXXX:XXXX (hex form normalized by WHATWG URL).
-  const ipv4MappedDottedMatch = h.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/i);
-  if (ipv4MappedDottedMatch) {
-    const quad = ipv4MappedDottedMatch[1];
-    if (/^127\./.test(quad)) return true;
-    if (/^10\./.test(quad)) return true;
-    if (/^192\.168\./.test(quad)) return true;
-    if (/^172\.(1[6-9]|2\d|3[01])\./.test(quad)) return true;
-    if (/^169\.254\./.test(quad)) return true;
+  // IPv6 unique-local addresses (fc00::/7) — the IPv6 equivalent of RFC 1918, used by real
+  // internal networks.
+  if (/^f[cd][0-9a-f]{2}:/i.test(h)) return true;
+
+  // IPv4-mapped/compatible IPv6, hex-normalized form only (WHATWG always serializes this way —
+  // e.g. ::ffff:127.0.0.1 becomes ::ffff:7f00:1, and ::127.0.0.1 becomes ::7f00:1; the dotted
+  // form never appears in a URL's hostname, so there is no separate branch for it).
+  const v4MappedMatch = h.match(/^::(?:ffff:)?([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i);
+  if (v4MappedMatch) {
+    const hi = Number.parseInt(v4MappedMatch[1], 16);
+    const lo = Number.parseInt(v4MappedMatch[2], 16);
+    const a = (hi >> 8) & 0xff;
+    const b = hi & 0xff;
+    const c = (lo >> 8) & 0xff;
+    const d = lo & 0xff;
+    if (isPrivateIPv4(`${a}.${b}.${c}.${d}`)) return true;
   }
 
-  // IPv4-mapped IPv6 in hex form (WHATWG normalization): ::ffff:XXXX:XXXX.
-  const ipv4MappedHexMatch = h.match(/^::ffff:([0-9a-f]+):([0-9a-f]+)$/i);
-  if (ipv4MappedHexMatch) {
-    const hex1 = parseInt(ipv4MappedHexMatch[1], 16);
-    const hex2 = parseInt(ipv4MappedHexMatch[2], 16);
-    const a = (hex1 >> 8) & 0xff;
-    const b = hex1 & 0xff;
-    const c = (hex2 >> 8) & 0xff;
-    const d = hex2 & 0xff;
-    const quad = `${a}.${b}.${c}.${d}`;
-    if (/^127\./.test(quad)) return true;
-    if (/^10\./.test(quad)) return true;
-    if (/^192\.168\./.test(quad)) return true;
-    if (/^172\.(1[6-9]|2\d|3[01])\./.test(quad)) return true;
-    if (/^169\.254\./.test(quad)) return true;
-  }
-
-  // IPv4 loopback, private, and link-local ranges.
-  if (/^127\./.test(h)) return true;
-  if (/^10\./.test(h)) return true;
-  if (/^192\.168\./.test(h)) return true;
-  if (/^172\.(1[6-9]|2\d|3[01])\./.test(h)) return true;
-  if (/^169\.254\./.test(h)) return true;
+  // IPv4 loopback, private, CGNAT, and link-local ranges.
+  if (isPrivateIPv4(h)) return true;
 
   return false;
 }
@@ -90,16 +93,13 @@ async function readCappedText(
 
   // Create a promise that rejects if the abort signal fires, allowing us to race it against reader.read().
   const abortPromise = new Promise<never>((_, reject) =>
-    signal.addEventListener("abort", () => reject(new Error("abort")))
+    signal.addEventListener("abort", () => reject(new Error("abort"))),
   );
 
   try {
     for (;;) {
       // Race the read against abort — if abort fires, Promise.race will reject with the abortPromise.
-      const { done, value } = await Promise.race([
-        reader.read(),
-        abortPromise,
-      ]);
+      const { done, value } = await Promise.race([reader.read(), abortPromise]);
       if (done) break;
       total += value.byteLength;
       if (total > maxBytes) {
@@ -132,9 +132,7 @@ async function readCappedText(
  * validation failure — an invalid/unreachable document means "not a CIMD client," not a
  * server error, so callers fall back to other registration mechanisms.
  */
-export async function fetchClientIdMetadata(
-  clientIdUrl: string,
-): Promise<ClientIdMetadata | null> {
+export async function fetchClientIdMetadata(clientIdUrl: string): Promise<ClientIdMetadata | null> {
   let url: URL;
   try {
     url = new URL(clientIdUrl);
@@ -172,11 +170,17 @@ export async function fetchClientIdMetadata(
     if (d.client_id !== clientIdUrl) return null;
     if (!Array.isArray(d.redirect_uris) || d.redirect_uris.length === 0) return null;
     if (!d.redirect_uris.every((u) => typeof u === "string")) return null;
+    const redirectUris = d.redirect_uris as string[];
+    // Same rules DCR enforces on POST /register (no fragments, https-only except
+    // localhost/127.0.0.1 http): a CIMD document must not be able to smuggle in a redirect
+    // URI that DCR would have rejected. Any one bad entry invalidates the whole document,
+    // consistent with this function's all-or-nothing "invalid → null" contract.
+    if (!redirectUris.every((u) => isValidRedirectUri(u))) return null;
 
     return {
       clientId: clientIdUrl,
       clientName: typeof d.client_name === "string" ? d.client_name : undefined,
-      redirectUris: d.redirect_uris as string[],
+      redirectUris,
     };
   } finally {
     clearTimeout(timeout);

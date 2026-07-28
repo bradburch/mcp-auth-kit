@@ -140,10 +140,9 @@ describe("Client ID Metadata Document resolution", () => {
       "fetch",
       vi.fn(
         async () =>
-          new Response(
-            JSON.stringify({ client_id: cimdClientId, redirect_uris: redirectUris }),
-            { status: 200 },
-          ),
+          new Response(JSON.stringify({ client_id: cimdClientId, redirect_uris: redirectUris }), {
+            status: 200,
+          }),
       ),
     );
   }
@@ -210,6 +209,29 @@ describe("Client ID Metadata Document resolution", () => {
 
     await provider.validateClientRedirect(cimdClientId, "https://app.example.com/callback");
     await provider.validateClientRedirect(cimdClientId, "https://app.example.com/callback");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("caches a failed CIMD fetch so a second lookup doesn't re-fetch", async () => {
+    const fetchMock = vi.fn(async () => new Response("not found", { status: 404 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const provider = createOAuthProvider({
+      storage: createMemoryStorage(),
+      scopes,
+      baseUrl,
+      allowClientIdMetadataDocuments: true,
+    });
+
+    const first = await provider.validateClientRedirect(
+      cimdClientId,
+      "https://app.example.com/callback",
+    );
+    const second = await provider.validateClientRedirect(
+      cimdClientId,
+      "https://app.example.com/callback",
+    );
+    expect(first).toBe(false);
+    expect(second).toBe(false);
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });

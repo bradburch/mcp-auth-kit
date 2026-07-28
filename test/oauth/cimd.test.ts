@@ -88,6 +88,61 @@ describe("fetchClientIdMetadata", () => {
     expect(await fetchClientIdMetadata(clientId)).toBeNull();
   });
 
+  it("rejects a document with a non-localhost http:// redirect_uri", async () => {
+    const clientId = "https://app.example.com/oauth/client.json";
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              client_id: clientId,
+              redirect_uris: ["http://evil.example.com/callback"],
+            }),
+            { status: 200 },
+          ),
+      ),
+    );
+    expect(await fetchClientIdMetadata(clientId)).toBeNull();
+  });
+
+  it("rejects a document with a fragment-bearing redirect_uri", async () => {
+    const clientId = "https://app.example.com/oauth/client.json";
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              client_id: clientId,
+              redirect_uris: ["https://app.example.com/callback#frag"],
+            }),
+            { status: 200 },
+          ),
+      ),
+    );
+    expect(await fetchClientIdMetadata(clientId)).toBeNull();
+  });
+
+  it("accepts a document with valid https:// and localhost http:// redirect_uris", async () => {
+    const clientId = "https://app.example.com/oauth/client.json";
+    const redirectUris = ["https://app.example.com/callback", "http://localhost:8080/callback"];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(JSON.stringify({ client_id: clientId, redirect_uris: redirectUris }), {
+            status: 200,
+          }),
+      ),
+    );
+    expect(await fetchClientIdMetadata(clientId)).toEqual({
+      clientId,
+      clientName: undefined,
+      redirectUris,
+    });
+  });
+
   it("blocks IPv6 loopback [::1] without making a request", async () => {
     const fetchSpy = vi.fn();
     vi.stubGlobal("fetch", fetchSpy);
@@ -110,6 +165,57 @@ describe("fetchClientIdMetadata", () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
+  it("blocks the IPv6 unspecified address [::] without making a request", async () => {
+    const fetchSpy = vi.fn();
+    vi.stubGlobal("fetch", fetchSpy);
+    expect(await fetchClientIdMetadata("https://[::]/client.json")).toBeNull();
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("blocks IPv6 unique-local addresses (fc00::/7) without making a request", async () => {
+    const fetchSpy = vi.fn();
+    vi.stubGlobal("fetch", fetchSpy);
+    expect(await fetchClientIdMetadata("https://[fc00::1]/client.json")).toBeNull();
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("blocks IPv4-compatible IPv6 loopback (WHATWG-normalized ::ffff:127.0.0.1) without making a request", async () => {
+    const fetchSpy = vi.fn();
+    vi.stubGlobal("fetch", fetchSpy);
+    // WHATWG's URL parser normalizes ::ffff:127.0.0.1 to the hex form ::ffff:7f00:1.
+    expect(await fetchClientIdMetadata("https://[::ffff:127.0.0.1]/client.json")).toBeNull();
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("blocks 0.0.0.0/8 without making a request", async () => {
+    const fetchSpy = vi.fn();
+    vi.stubGlobal("fetch", fetchSpy);
+    expect(await fetchClientIdMetadata("https://0.0.0.1/client.json")).toBeNull();
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("blocks the 100.64.0.0/10 CGNAT range without making a request", async () => {
+    const fetchSpy = vi.fn();
+    vi.stubGlobal("fetch", fetchSpy);
+    expect(await fetchClientIdMetadata("https://100.64.0.1/client.json")).toBeNull();
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("does not block a host just outside the CGNAT range", async () => {
+    const fetchSpy = vi.fn(async () => new Response("{}", { status: 404 }));
+    vi.stubGlobal("fetch", fetchSpy);
+    // 100.63.255.255 is just below 100.64.0.0/10 — must not be treated as CGNAT.
+    await fetchClientIdMetadata("https://100.63.255.255/client.json");
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not block a public host", async () => {
+    const fetchSpy = vi.fn(async () => new Response("{}", { status: 404 }));
+    vi.stubGlobal("fetch", fetchSpy);
+    await fetchClientIdMetadata("https://8.8.8.8/client.json");
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
   it("times out a slow-loris body-read attack", async () => {
     const clientId = "https://app.example.com/oauth/client.json";
     let readerAbortCalled = false;
@@ -128,10 +234,7 @@ describe("fetchClientIdMetadata", () => {
 
     vi.stubGlobal(
       "fetch",
-      vi.fn(
-        async () =>
-          new Response(mockStream, { status: 200 }) as Response,
-      ),
+      vi.fn(async () => new Response(mockStream, { status: 200 }) as Response),
     );
 
     // Should timeout after 3000ms and return null without hanging forever.
@@ -164,18 +267,13 @@ describe("fetchClientIdMetadata", () => {
 
     vi.stubGlobal(
       "fetch",
-      vi.fn(
-        async () =>
-          new Response(mockStream, { status: 200 }) as Response,
-      ),
+      vi.fn(async () => new Response(mockStream, { status: 200 }) as Response),
     );
 
     // Should timeout after 3000ms and return null, NOT throw.
     const result = await Promise.race([
       fetchClientIdMetadata(clientId),
-      new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error("Test timeout")), 5000),
-      ),
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error("Test timeout")), 5000)),
     ]);
 
     // Despite cancel() rejecting, the function should still resolve to null.

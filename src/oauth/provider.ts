@@ -97,7 +97,12 @@ export interface OAuthProvider {
     redirectUris: string[];
     clientName?: string;
     applicationType?: "web" | "native";
-  }): Promise<{ clientId: string; redirectUris: string[]; createdAt: number; applicationType?: "web" | "native" }>;
+  }): Promise<{
+    clientId: string;
+    redirectUris: string[];
+    createdAt: number;
+    applicationType?: "web" | "native";
+  }>;
   issueAuthCode(input: {
     clientId: string;
     redirectUri: string;
@@ -177,13 +182,15 @@ export function createOAuthProvider(config: OAuthProviderConfig): OAuthProvider 
 
     const cacheKey = cimdKey(await sha256Hex(clientId));
     const cached = await storage.get(cacheKey);
-    if (cached !== null) {
-      // Empty string is the cached "fetched but invalid/unreachable" sentinel.
-      return cached === "" ? null : (JSON.parse(cached) as string[]);
-    }
+    // Loose equality: a third-party KvLike adapter could return undefined instead of null;
+    // JSON.parse(undefined) would throw uncaught outside this function's try/catch.
+    if (cached != null) return JSON.parse(cached) as string[];
 
     const doc = await fetchClientIdMetadata(clientId);
-    await storage.put(cacheKey, doc ? JSON.stringify(doc.redirectUris) : "", {
+    // "[]" is the cached "fetched but invalid/unreachable" sentinel — JSON.parse("[]") is
+    // naturally an empty array, and [].includes(anything) is false, so no special-case
+    // branch is needed to read it back.
+    await storage.put(cacheKey, doc ? JSON.stringify(doc.redirectUris) : "[]", {
       ttlSeconds: TTL.CIMD_CACHE,
     });
     return doc?.redirectUris ?? null;

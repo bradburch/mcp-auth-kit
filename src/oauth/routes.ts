@@ -1,4 +1,4 @@
-// OAuth HTTP route handlers (RFC 6749 / RFC 7009 / RFC 8414).
+// OAuth HTTP route handlers (RFC 6749 / RFC 7009 / RFC 8414 / RFC 9207).
 // Provides mountOAuthRoutes(app, deps) for wiring POST /register, GET+POST /authorize,
 // POST /token, POST /revoke onto a Hono app.
 import type { Context, Hono } from "hono";
@@ -9,6 +9,7 @@ import { renderAuthorizePage, type AuthorizePageParams } from "../identity/page.
 import type { RateLimiter } from "../rate-limit.js";
 import { extractClientIp } from "../http/client-ip.js";
 import { readCappedBody } from "../http/body-limit.js";
+import { hasFragment, isAllowedRedirectUriScheme } from "./redirect-uri.js";
 
 // ─── Security header constants ───────────────────────────────────────────────
 
@@ -29,14 +30,6 @@ function oauthError(
   description?: string,
 ): { error: string; error_description?: string } {
   return description ? { error, error_description: description } : { error };
-}
-
-function hasFragment(uri: string): boolean {
-  try {
-    return new URL(uri).hash !== "";
-  } catch {
-    return false;
-  }
 }
 
 /**
@@ -206,8 +199,7 @@ export function mountOAuthRoutes(
     try {
       parsedUris = (redirectUris as string[]).map((u: string) => {
         const url = new URL(u);
-        const isLocal = url.hostname === "localhost" || url.hostname === "127.0.0.1";
-        if (url.protocol !== "https:" && !(url.protocol === "http:" && isLocal)) {
+        if (!isAllowedRedirectUriScheme(u)) {
           throw new Error(`Invalid redirect URI scheme: ${url.protocol}`);
         }
         return url.toString();
