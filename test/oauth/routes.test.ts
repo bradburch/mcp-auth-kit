@@ -228,3 +228,57 @@ describe("POST /register — application_type", () => {
     expect((await res.json()).application_type).toBeUndefined();
   });
 });
+
+describe("GET /authorize — redirect URI display", () => {
+  it("shows the redirect URI hostname on the login page", async () => {
+    const app = new Hono();
+    const provider = createOAuthProvider({ storage: createMemoryStorage(), scopes, baseUrl });
+    mountOAuthRoutes(app, {
+      provider,
+      baseUrl,
+      identity: { fields: [{ name: "email", label: "Email" }], verify: async () => "user-1" },
+    });
+    const { client_id } = await (
+      await app.request("/register", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ redirect_uris: ["https://app.example.com/cb"] }),
+      })
+    ).json();
+
+    const res = await app.request(
+      `/authorize?response_type=code&client_id=${client_id}&redirect_uri=${encodeURIComponent("https://app.example.com/cb")}&code_challenge=x&code_challenge_method=S256`,
+    );
+    const html = await res.text();
+    expect(html).toContain("app.example.com");
+  });
+
+  it("warns when the redirect URI is localhost", async () => {
+    const app = new Hono();
+    const provider = createOAuthProvider({ storage: createMemoryStorage(), scopes, baseUrl });
+    mountOAuthRoutes(app, {
+      provider,
+      baseUrl,
+      identity: { fields: [{ name: "email", label: "Email" }], verify: async () => "user-1" },
+    });
+    const { client_id } = await (
+      await app.request("/register", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ redirect_uris: ["http://localhost:9999/cb"] }),
+      })
+    ).json();
+
+    const res = await app.request(
+      `/authorize?response_type=code&client_id=${client_id}&redirect_uri=${encodeURIComponent("http://localhost:9999/cb")}&code_challenge=x&code_challenge_method=S256`,
+    );
+    const html = await res.text();
+    expect(html.toLowerCase()).toContain("localhost");
+    expect(html.toLowerCase()).toMatch(/warn|caution|note/);
+  });
+
+  it("sets frame-ancestors none on the authorize CSP", async () => {
+    const res = await appUnderTest().request("/authorize");
+    expect(res.headers.get("content-security-policy")).toContain("frame-ancestors 'none'");
+  });
+});

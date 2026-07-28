@@ -19,9 +19,10 @@ const TOKEN_CACHE_HEADERS = {
   Pragma: "no-cache",
 } as const;
 
-/** CSP for the authorize form page. img-src https: allows https logo images. */
+/** CSP for the authorize form page. img-src https: allows https logo images.
+ *  frame-ancestors 'none' prevents the login form from being framed (clickjacking). */
 const AUTHORIZE_CSP =
-  "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; img-src https:";
+  "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; img-src https:; frame-ancestors 'none'";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
