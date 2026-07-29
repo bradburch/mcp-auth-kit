@@ -19,18 +19,23 @@ interface Env {
   KV: KVNamespace;
 }
 
-const app = createMcpServer({
-  baseUrl: "https://mcp.example.com",
-  storage: createCloudflareKvStorage(
-    // KV bindings are available on globalThis when the module initializes in Cloudflare Workers.
-    (globalThis as unknown as { KV: KVNamespace }).KV,
-  ),
-  scopes: [{ name: "account:read", default: true }],
-  tools,
-});
-
 export default {
-  fetch: (req: Request, env: Env) => app.fetch(req, env),
+  // Bindings only arrive via this `env` parameter in an ES-module Worker — build the app
+  // per-request so `createCloudflareKvStorage` gets the real KV namespace, not a
+  // module-scope value that doesn't exist yet at module-evaluation time.
+  fetch: (req: Request, env: Env) => {
+    const app = createMcpServer({
+      baseUrl: "https://mcp.example.com",
+      storage: createCloudflareKvStorage(env.KV),
+      scopes: [{ name: "account:read", default: true }],
+      identity: {
+        fields: [{ name: "email", label: "Email", type: "email", required: true }],
+        verify: async (fields) => ((await isValidUser(fields.email)) ? fields.email : null),
+      },
+      tools,
+    });
+    return app.fetch(req, env);
+  },
 } satisfies ExportedHandler<Env>;
 ```
 
@@ -54,7 +59,9 @@ Storage: `createCloudflareKvStorage` — built in, no extra install.
 npm install @hono/node-server
 ```
 
-Use any `KvLike` implementation. The in-memory adapter works for single-process deployments; use the Redis or Postgres adapter from [docs/storage-adapters.md](storage-adapters.md) for persistence.
+Use any `KvLike` implementation. **The in-memory adapter is for local development only — even a single production process restarts, loses state, and (if ever scaled to more than one instance) won't share state across them.** Use the Redis or Postgres adapter from [docs/storage-adapters.md](storage-adapters.md) for anything beyond local dev.
+
+**`baseUrl` must be the externally-visible `https://` URL**, even if this process itself listens on plain HTTP behind a TLS-terminating reverse proxy — `createMcpServer` throws at construction time if `baseUrl` isn't `https://` (except for `localhost`/`127.0.0.1`). Setting `BASE_URL=http://10.0.0.5:3000` for an internal address behind a proxy will hit that throw; set it to the public `https://` hostname instead.
 
 ```ts
 // src/index.ts
@@ -66,6 +73,10 @@ const app = createMcpServer({
   baseUrl: process.env.BASE_URL ?? "http://localhost:3000",
   storage: createMemoryStorage(), // swap for Redis/Postgres adapter in production
   scopes: [{ name: "account:read", default: true }],
+  identity: {
+    fields: [{ name: "email", label: "Email", type: "email", required: true }],
+    verify: async (fields) => ((await isValidUser(fields.email)) ? fields.email : null),
+  },
   tools,
 });
 
@@ -95,6 +106,10 @@ const app = createMcpServer({
   baseUrl: process.env.BASE_URL ?? "https://mcp.example.com",
   storage: createMemoryStorage(),
   scopes: [{ name: "account:read", default: true }],
+  identity: {
+    fields: [{ name: "email", label: "Email", type: "email", required: true }],
+    verify: async (fields) => ((await isValidUser(fields.email)) ? fields.email : null),
+  },
   tools,
 });
 
@@ -121,12 +136,41 @@ const app = createMcpServer({
   baseUrl: process.env.NEXT_PUBLIC_BASE_URL ?? "https://mcp.example.com",
   storage: createMemoryStorage(),
   scopes: [{ name: "account:read", default: true }],
+  identity: {
+    fields: [{ name: "email", label: "Email", type: "email", required: true }],
+    verify: async (fields) => ((await isValidUser(fields.email)) ? fields.email : null),
+  },
   tools,
 });
 
 export const GET = handle(app);
 export const POST = handle(app);
 ```
+
+Vercel Functions live under `/api` by default, which conflicts with the origin-root requirement stated above. For a Next.js project specifically, Vercel's own docs favor framework-level rewrites over `vercel.json` (framework config takes precedence when both are present), so prefer `next.config.js`'s `rewrites()` over a `vercel.json` block for a Next.js App Router app:
+
+```js
+// next.config.js
+/** @type {import('next').NextConfig} */
+module.exports = {
+  async rewrites() {
+    return [
+      { source: "/.well-known/:path*", destination: "/api/:path*" },
+      { source: "/authorize", destination: "/api/authorize" },
+      { source: "/token", destination: "/api/token" },
+      { source: "/register", destination: "/api/register" },
+      { source: "/revoke", destination: "/api/revoke" },
+      { source: "/mcp", destination: "/api/mcp" },
+    ];
+  },
+};
+```
+
+> **This rewrite approach is unverified end-to-end** — in particular, whether the Hono
+> catch-all handler above sees the pre-rewrite or post-rewrite path (which determines
+> whether discovery requests actually reach it, or 404) hasn't been confirmed against a
+> live deployment. Check the current Vercel and Next.js docs, and test the well-known
+> paths against a real deployment, before relying on this in production.
 
 For the `"nodejs"` runtime, substitute `"hono/vercel"` with `"@hono/node-server/vercel"` if the Vercel adapter requires it — check the current Hono docs for the correct import.
 

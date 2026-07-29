@@ -16,11 +16,23 @@ import { handleMcpRequest, jsonRpcError, JSON_RPC_ERROR } from "./transport.js";
 
 /** Default server identity reported to MCP clients (adopter can't yet override). */
 const DEFAULT_SERVER_NAME = "mcp-oauth-kit";
-const DEFAULT_SERVER_VERSION = "0.1.0";
+// Keep in sync with package.json's "version" — nothing enforces this automatically.
+const DEFAULT_SERVER_VERSION = "0.2.0";
 
 /** JSON-RPC error for the GET/DELETE 405 responses (no SSE / sessions in stateless mode). */
 function methodNotAllowed(message: string): Response {
   return Response.json(jsonRpcError(JSON_RPC_ERROR.METHOD_NOT_ALLOWED, message), { status: 405 });
+}
+
+/** Security-considerations: "All authorization server endpoints MUST be served over HTTPS." */
+function assertHttpsBaseUrl(baseUrl: string): void {
+  const url = new URL(baseUrl);
+  const isLocal = url.hostname === "localhost" || url.hostname === "127.0.0.1";
+  if (url.protocol !== "https:" && !isLocal) {
+    throw new Error(
+      `baseUrl must be https:// (got "${baseUrl}") — http is only allowed for localhost/127.0.0.1 during local development.`,
+    );
+  }
 }
 
 /**
@@ -28,6 +40,8 @@ function methodNotAllowed(message: string): Response {
  * MCP transport. The caller owns feature-gating (wrap with their own middleware if desired).
  */
 export function createMcpServer(config: McpServerConfig): Hono {
+  assertHttpsBaseUrl(config.baseUrl);
+
   const app = new Hono();
 
   const provider = createOAuthProvider({
@@ -69,9 +83,10 @@ export function createMcpServer(config: McpServerConfig): Hono {
       baseUrl: config.baseUrl,
       serverName: DEFAULT_SERVER_NAME,
       serverVersion: DEFAULT_SERVER_VERSION,
-      env: undefined,
+      env: c.env,
       hooks,
       defaultScopes: config.scopes.filter((s) => s.default).map((s) => s.name),
+      allowedOrigins: config.allowedOrigins ?? [],
     }),
   );
 

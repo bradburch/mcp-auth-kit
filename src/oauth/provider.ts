@@ -17,7 +17,9 @@ const TTL = {
   AUTH_CODE: 5 * 60, // 5 minutes
   ACCESS_TOKEN: 60 * 60, // 1 hour
   REFRESH_TOKEN: 90 * 24 * 60 * 60, // 90 days
-  CIMD_CACHE: 60 * 60, // 1 hour — bounds staleness without needing to parse Cache-Control
+  CIMD_CACHE: 60 * 60, // 1 hour — fallback used only when the fetched document sends no
+  // `Cache-Control: max-age` of its own; when it does, that (clamped) value wins instead
+  // (see cimd.ts's parseMaxAge / MIN_CACHE_SECONDS / MAX_CACHE_SECONDS).
 } as const;
 
 /** An access + refresh token pair returned to the client. */
@@ -191,7 +193,7 @@ export function createOAuthProvider(config: OAuthProviderConfig): OAuthProvider 
     // naturally an empty array, and [].includes(anything) is false, so no special-case
     // branch is needed to read it back.
     await storage.put(cacheKey, doc ? JSON.stringify(doc.redirectUris) : "[]", {
-      ttlSeconds: TTL.CIMD_CACHE,
+      ttlSeconds: doc?.maxAgeSeconds ?? TTL.CIMD_CACHE,
     });
     return doc?.redirectUris ?? null;
   }
@@ -384,6 +386,12 @@ export function createOAuthProvider(config: OAuthProviderConfig): OAuthProvider 
       const tokenData = JSON.parse(raw) as TokenData;
       // Defense-in-depth expiry — never honour a token past its TTL even if KV did.
       if (isExpired(tokenData.createdAt, TTL.ACCESS_TOKEN)) {
+        return null;
+      }
+      // Defense-in-depth audience check (RFC 8707 §2) — redundant with issue-time binding
+      // under normal operation, but guards against a KV namespace ever being shared across
+      // two servers built with this kit.
+      if (tokenData.resource && tokenData.resource !== expectedResource) {
         return null;
       }
       return { userId: tokenData.userId, scopes: tokenData.scope };

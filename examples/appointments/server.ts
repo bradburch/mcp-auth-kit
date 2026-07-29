@@ -1,9 +1,9 @@
 import { z } from "zod";
 import { createMcpServer, createMemoryStorage } from "../../src/index.js";
 
-export function createAppointmentsServer() {
+export function createAppointmentsServer(baseUrl = "https://example.test") {
   return createMcpServer({
-    baseUrl: "https://example.test",
+    baseUrl,
     storage: createMemoryStorage(),
     scopes: [
       { name: "account:read", default: true },

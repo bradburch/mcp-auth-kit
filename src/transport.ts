@@ -21,12 +21,50 @@ export const JSON_RPC_ERROR = {
   METHOD_NOT_ALLOWED: -32000,
   AUTH_REQUIRED: -32001,
   RATE_LIMITED: -32002,
+  ORIGIN_NOT_ALLOWED: -32003,
+  HEADER_MISMATCH: -32020, // matches the MCP 2026-07-28 error-code allocation policy
+  INSUFFICIENT_SCOPE: -32021, // matches the MCP 2026-07-28 error-code allocation policy
   INTERNAL: -32603,
 } as const;
 
 /** Build a JSON-RPC error envelope (id: null — no request id at the transport boundary). */
 export function jsonRpcError(code: number, message: string) {
   return { jsonrpc: "2.0" as const, id: null, error: { code, message } };
+}
+
+/**
+ * MCP 2026-07-28 streamable-http spec: reject a request where `Mcp-Method` (and, for
+ * `tools/call`, `Mcp-Name`) don't match the JSON-RPC body — guards against an edge proxy
+ * routing/authorizing on the header while the server executes on the body. A request with
+ * NO such headers (older clients) is unaffected; only a present-but-mismatched header is
+ * rejected. An unparseable body is not rejected here — the SDK transport handles that.
+ */
+function headerMismatch(req: Request, requestBody: string): boolean {
+  const mcpMethod = req.headers.get("Mcp-Method");
+  const mcpName = req.headers.get("Mcp-Name");
+  if (mcpMethod === null && mcpName === null) return false;
+
+  let parsedRaw: unknown;
+  try {
+    parsedRaw = JSON.parse(requestBody);
+  } catch {
+    return false; // let the SDK's own JSON-RPC parse-error handling take over
+  }
+  // A bare null/array/scalar isn't a JSON-RPC request shape — treat it the same as
+  // unparseable and let the SDK transport reject it downstream (mirrors the same guard
+  // in oauth/routes.ts's readBodyParsed). Arrays (JSON-RPC batch requests) are explicitly
+  // excluded here too: they fall through to normal dispatch, where registry-level scope
+  // gating handles each element individually.
+  if (parsedRaw === null || Array.isArray(parsedRaw) || typeof parsedRaw !== "object") {
+    return false;
+  }
+  const parsed = parsedRaw as { method?: unknown; params?: { name?: unknown } };
+
+  if (mcpMethod !== null && parsed.method !== mcpMethod) return true;
+  if (mcpName !== null && parsed.method === "tools/call" && parsed.params?.name !== mcpName) {
+    return true;
+  }
+  return false;
 }
 
 export interface McpRequestDeps {
@@ -41,6 +79,13 @@ export interface McpRequestDeps {
   hooks: ObservabilityHooks;
   /** Scopes granted when a client requests none — hinted in the 401 WWW-Authenticate (RFC 6750 §3). */
   defaultScopes: string[];
+  /**
+   * Exact-match allowlist for the `Origin` header — see `McpServerConfig.allowedOrigins`.
+   * Optional for backward compatibility with existing low-level callers; omitting it is
+   * equivalent to passing `[]` and preserves the secure-by-default behavior (any request
+   * carrying an `Origin` header is rejected).
+   */
+  allowedOrigins?: string[];
 }
 
 /**
@@ -49,12 +94,33 @@ export interface McpRequestDeps {
  * and dispatch. Returns a JSON-RPC error Response on auth/rate-limit failure.
  */
 export async function handleMcpRequest(req: Request, deps: McpRequestDeps): Promise<Response> {
+  // MCP 2026-07-28 streamable-http spec: validate Origin to prevent DNS-rebinding attacks
+  // from a malicious webpage against a locally-running server. No Origin header means a
+  // non-browser client (the common case) — always allowed. An Origin header present but
+  // not in the configured allowlist (default: nothing allowed) is rejected outright.
+  const origin = req.headers.get("Origin");
+  if (origin !== null && !(deps.allowedOrigins ?? []).includes(origin)) {
+    return Response.json(jsonRpcError(JSON_RPC_ERROR.ORIGIN_NOT_ALLOWED, "Origin not allowed"), {
+      status: 403,
+    });
+  }
+
   // Read the body up front (before anything else could consume the stream), with the
   // 1 MB cap enforced while streaming — a pre-auth DoS guard that never buffers an
   // unbounded chunked body into memory.
   const capped = await readCappedBody(req);
   if (capped instanceof Response) return capped;
   const requestBody = capped;
+
+  if (headerMismatch(req, requestBody)) {
+    return Response.json(
+      jsonRpcError(
+        JSON_RPC_ERROR.HEADER_MISMATCH,
+        "Mcp-Method/Mcp-Name header does not match request body",
+      ),
+      { status: 400 },
+    );
+  }
 
   // RFC 9728: tell clients where to discover OAuth endpoints on a 401.
   const resourceMetadataUrl = `${deps.baseUrl}/.well-known/oauth-protected-resource`;
@@ -104,6 +170,34 @@ export async function handleMcpRequest(req: Request, deps: McpRequestDeps): Prom
     env: deps.env,
     hooks: deps.hooks,
   };
+
+  // Spec SHOULD: a single (non-batch) tools/call for a tool the caller's scopes don't
+  // grant gets the HTTP-level 403 insufficient_scope challenge, in addition to (not
+  // instead of) the isError tool result registry.ts already returns — a batch request or
+  // any other method falls through to the normal 200 JSON-RPC dispatch, where per-call
+  // scope handling in registry.ts still applies.
+  let parsedForScopeCheck: { method?: unknown; params?: { name?: unknown } } | null = null;
+  try {
+    parsedForScopeCheck = JSON.parse(requestBody);
+  } catch {
+    parsedForScopeCheck = null;
+  }
+  if (
+    parsedForScopeCheck &&
+    !Array.isArray(parsedForScopeCheck) &&
+    parsedForScopeCheck.method === "tools/call" &&
+    typeof parsedForScopeCheck.params?.name === "string"
+  ) {
+    const calledTool = deps.tools.find((t) => t.name === parsedForScopeCheck!.params!.name);
+    if (calledTool?.scope && !auth.scopes.includes(calledTool.scope)) {
+      return Response.json(jsonRpcError(JSON_RPC_ERROR.INSUFFICIENT_SCOPE, "Insufficient scope"), {
+        status: 403,
+        headers: {
+          "WWW-Authenticate": `Bearer error="insufficient_scope", scope="${calledTool.scope}", resource_metadata="${resourceMetadataUrl}"`,
+        },
+      });
+    }
+  }
 
   // Fresh server + stateless JSON transport for this request.
   const server = new McpServer({

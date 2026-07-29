@@ -12,6 +12,11 @@ in-memory storage and an email + verification-code identity.
 > requires `/.well-known/oauth-authorization-server` to resolve at the domain root. See the
 > [deploy guide](../../docs/deploy.md) for details.
 
+> **Import path:** `server.ts` imports from `../../src/index.js` (repo-relative) because
+> this example is dogfooded by the kit's own test suite. A real project imports from the
+> published package instead — `import { createMcpServer, ... } from "mcp-oauth-kit"` — see
+> [`docs/how-to-use.md`](../../docs/how-to-use.md) for the copy-pasteable version.
+
 ## Run on Node
 
 `@hono/node-server` and a TypeScript runner (`tsx` or `ts-node`) are dev extras — not bundled

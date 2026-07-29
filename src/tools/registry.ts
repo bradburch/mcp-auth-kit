@@ -1,11 +1,20 @@
 // Tool registry + scope gating.
 //
-// Registers each configured tool onto a per-request McpServer:
-//   - Read tools (no `scope`) always register.
-//   - A tool carrying a `scope` registers only when `grantedScopes` includes it.
-//   - Mutating tools register via `registerMutatingTool` (two-phase preview), and when ANY
-//     mutating tool is granted, ONE shared `confirm_request` tool is registered to execute
-//     them (see two-phase.ts).
+// Registers EVERY configured tool onto a per-request McpServer — scope gating happens at
+// dispatch time, not at registration time. This is deliberate (MCP 2026-07-28 step-up
+// authorization flow): a client must be able to DISCOVER a scope-gated tool via `tools/list`
+// before it can know to request the scope for it, so silently omitting ungranted tools from
+// the list would make that discovery impossible.
+//   - Read tools (no `scope`, or a granted `scope`) delegate straight to their handler.
+//   - A read tool whose `scope` the caller lacks still registers, but its handler
+//     short-circuits to an `isError` result naming the missing scope (see
+//     `insufficientScopeResult`) — see also transport.ts, which additionally returns an
+//     HTTP-level 403 `insufficient_scope` challenge for the single-non-batch-call case.
+//   - Mutating tools register via `registerMutatingTool` (two-phase preview) when granted, or
+//     via `registerUngrantedMutatingTool` (immediate reject) when not; when ANY mutating tool
+//     is GRANTED, ONE shared `confirm_request` tool is registered to execute them (see
+//     two-phase.ts) — an ungranted mutating tool never reaches the preview phase that would
+//     create a token for confirm_request to act on.
 //
 // The Zod inputSchema → SDK shape conversion: `registerTool`'s `inputSchema` takes the Zod
 // object's `.shape` (a ZodRawShape), not the ZodObject itself.
@@ -27,6 +36,21 @@ function isGranted(tool: AnyTool, grantedScopes: string[]): boolean {
   return tool.scope === undefined || grantedScopes.includes(tool.scope);
 }
 
+/** Result returned (as an isError tool result, not a thrown exception) when a caller's
+ *  token lacks the scope a tool requires. The tool is still listed in tools/list — see
+ *  registerTools's file header — so this path is reachable by a caller who saw the tool. */
+function insufficientScopeResult(requiredScope: string) {
+  return {
+    content: [
+      {
+        type: "text" as const,
+        text: `This tool requires the "${requiredScope}" scope, which your current token does not have.`,
+      },
+    ],
+    isError: true,
+  };
+}
+
 /**
  * Fire onToolCall (fire-and-forget — errors are swallowed so a misbehaving
  * hook never fails the tool request).
@@ -45,8 +69,11 @@ async function fireToolCall(ctx: ToolContext, toolName: string, input: unknown):
 }
 
 /**
- * Register the configured tools onto `server`, gated by `grantedScopes`. Mutating tools
- * register a placeholder handler (replaced in Task 9); read tools delegate to their handler.
+ * Register EVERY configured tool onto `server`, regardless of `grantedScopes` — scope gating
+ * happens at dispatch time (see file header). Mutating tools register via
+ * `registerMutatingTool` (two-phase preview → confirm) when granted, or via
+ * `registerUngrantedMutatingTool` (a lightweight handler that always rejects) when not;
+ * read tools delegate to their handler when granted.
  */
 export function registerTools(
   server: McpServer,
@@ -57,12 +84,16 @@ export function registerTools(
   const grantedMutating: MutatingToolDef[] = [];
 
   for (const tool of tools) {
-    if (!isGranted(tool, grantedScopes)) continue;
+    const granted = isGranted(tool, grantedScopes);
 
     if (isMutating(tool)) {
-      // Two-phase: the tool call previews; execution happens via confirm_request.
-      registerMutatingTool(server, tool, ctx);
-      grantedMutating.push(tool);
+      if (granted) {
+        // Two-phase: the tool call previews; execution happens via confirm_request.
+        registerMutatingTool(server, tool, ctx);
+        grantedMutating.push(tool);
+      } else {
+        registerUngrantedMutatingTool(server, tool);
+      }
       continue;
     }
 
@@ -72,6 +103,10 @@ export function registerTools(
     // Build the per-call handler. The SDK passes the parsed args object as the first
     // argument; we forward it to the tool's handler as-is.
     const cb = async (input: unknown) => {
+      if (!granted) {
+        // tool.scope is guaranteed defined here — isGranted only returns false when it is.
+        return insufficientScopeResult(tool.scope!);
+      }
       let result: unknown;
       try {
         result = await readTool.handler(input, ctx);
@@ -100,8 +135,27 @@ export function registerTools(
     );
   }
 
-  // Register the ONE shared confirm_request tool whenever any mutating tool is present.
+  // Register the shared confirm_request tool whenever any mutating tool is GRANTED — an
+  // ungranted mutating tool never reaches the preview phase that would create a token for
+  // confirm_request to act on, so there's nothing for it to do for a caller with none granted.
   if (grantedMutating.length > 0) {
     registerConfirmTool(server, ctx, grantedMutating);
   }
+}
+
+/** Register an ungranted mutating tool with a preview handler that immediately rejects —
+ *  it never reaches two-phase.ts's real preview/confirm machinery.
+ *
+ *  Annotations are built the same way `registerMutatingTool` (two-phase.ts) builds them
+ *  (`destructiveHint: true` unless overridden) so a tool's discovery metadata in tools/list
+ *  is identical whether or not the caller happens to have the scope — a caller stepping up
+ *  from ungranted to granted must not see the tool's annotations change out from under it. */
+function registerUngrantedMutatingTool(server: McpServer, tool: MutatingToolDef): void {
+  const shape = toShape(tool.inputSchema);
+  const annotations = { destructiveHint: true, ...(tool.annotations ?? {}) };
+  server.registerTool(
+    tool.name,
+    { description: tool.description, inputSchema: shape, annotations },
+    async () => insufficientScopeResult(tool.scope!),
+  );
 }

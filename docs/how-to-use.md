@@ -114,15 +114,82 @@ identity: {
     { name: "code", label: "One-time code", type: "text", required: true },
   ],
   verify: async (fields) => {
-    const user = await db.verifyLoginCode(fields.email, fields.code);
-    return user ? user.id : null;
+    // Illustrative in-memory check — replace with your real user store/lookup.
+    const validCodes = new Map([["you@example.com", "123456"]]);
+    return validCodes.get(fields.email) === fields.code ? fields.email : null;
   },
 }
 ```
 
 The kit never stores credentials — it only stores the issued tokens (hashed) keyed to the
-user id you return. If you already run your own OAuth UI, omit `identity` and compose the
-lower-level pieces (see the README's "Advanced / low-level API").
+user id you return.
+
+### Bringing your own OAuth UI / SSO instead of `identity`
+
+If you already run your own OAuth UI or SSO flow (SAML, OIDC, an existing login page),
+`createMcpServer`'s built-in `identity` form isn't your integration point — it's a credential
+form, not a redirect-based federation client. Compose the lower-level pieces instead, and
+call `provider.issueAuthCode` yourself from wherever your own login flow lands:
+
+> **The route must be `/authorize`, and it must be registered before `mountOAuthRoutes`.**
+> `mountDiscovery` publishes `authorization_endpoint: "<baseUrl>/authorize"` in the AS metadata
+> — that exact path is what every spec-compliant client will request, so your override has to
+> live there, not at some other path. `mountOAuthRoutes` also registers its own
+> `GET /authorize` (which 400s with "No identity provider configured" when `identity` is
+> omitted). Hono dispatches to the **first** matching handler registered for a given method +
+> path, so register yours first to shadow the kit's. (Its `POST /authorize` is still registered
+> after yours but is simply never hit, since your flow never submits to it — harmless, unused.)
+
+```ts
+import { Hono } from "hono";
+import {
+  createOAuthProvider,
+  mountOAuthRoutes,
+  mountDiscovery,
+  createMemoryStorage,
+} from "mcp-oauth-kit";
+
+const baseUrl = "https://mcp.example.com";
+const storage = createMemoryStorage(); // swap for production storage
+const scopes = [{ name: "account:read", default: true }];
+
+const provider = createOAuthProvider({ storage, scopes, baseUrl });
+const app = new Hono();
+
+mountDiscovery(app, { baseUrl, scopes });
+
+// Register YOUR /authorize BEFORE mountOAuthRoutes — Hono dispatches to the first handler
+// registered for a given method + path, so this shadows the kit's bundled GET /authorize.
+// Your own login flow lands here after it has already authenticated the user via SSO/SAML/etc.
+app.get("/authorize", async (c) => {
+  const userId = await mySsoMiddleware(c); // however you already authenticate users
+  const { code } = await provider.issueAuthCode({
+    clientId: c.req.query("client_id")!,
+    redirectUri: c.req.query("redirect_uri")!,
+    codeChallenge: c.req.query("code_challenge")!,
+    scope: provider.normalizeScopes((c.req.query("scope") ?? "").split(" ")),
+    userId,
+    resource: c.req.query("resource") ?? "",
+  });
+  const location = new URL(c.req.query("redirect_uri")!);
+  location.searchParams.set("code", code);
+  const state = c.req.query("state");
+  if (state) location.searchParams.set("state", state);
+  // RFC 9207: mountDiscovery advertises authorization_response_iss_parameter_supported,
+  // so a compliant client will reject a redirect that's missing this — see routes.ts.
+  location.searchParams.set("iss", baseUrl);
+  return c.redirect(location.toString(), 302);
+});
+
+// Omit `identity` here — mountOAuthRoutes's own GET /authorize (unreachable, shadowed above)
+// would otherwise reject with "No identity provider configured"; its POST /register, /token,
+// and /revoke are unaffected and still handle the rest of the OAuth flow normally.
+mountOAuthRoutes(app, { provider, baseUrl });
+```
+
+The MCP transport (`POST /mcp`) and tool registration are unaffected by this — mount them
+exactly as `createMcpServer` does internally (see its source for the six-line wiring), or
+just call `handleMcpRequest` directly per the README's low-level API reference.
 
 ## 5. Scopes and scope gating
 
@@ -136,14 +203,16 @@ scopes: [
 ],
 ```
 
-Attach `scope` to a tool to gate it. A caller whose token lacks the scope can't call the tool
-**and won't even see it** in `tools/list`:
+Attach `scope` to a tool to gate it. The tool is always listed in `tools/list` regardless
+of the caller's granted scopes — a client can discover it exists and ask for the scope via
+step-up authorization. A caller whose token lacks the scope gets an `isError` result
+naming the missing scope instead of the handler running:
 
 ```ts
 {
   name: "delete_thing",
   description: "Delete a thing.",
-  scope: "write",          // hidden + blocked unless the token has "write"
+  scope: "write",          // always listed; blocked unless the token has "write"
   inputSchema: z.object({ id: z.string() }),
   handler: async (input, ctx) => { /* ctx.scopes lists everything granted */ },
 }
@@ -173,7 +242,8 @@ actually execute. This gives the human/agent a chance to review the action first
     // Phase 2 — runs only after confirm_request with the token from phase 1.
     execute: async (data, ctx) => {
       const { slot } = data as { slot: string };
-      await db.book(ctx.userId, slot);
+      // Replace with your real persistence — this illustrates where the side effect goes.
+      console.log(`booking ${slot} for ${ctx.userId}`);
       return { content: [{ type: "text", text: `Booked ${slot}.` }] };
     },
   },
@@ -185,10 +255,43 @@ single-use. Results are cached under the idempotency key for 10 minutes so a ret
 replays rather than re-executes. (Exactly-once is best-effort on a store without
 compare-and-swap — see the README for the precise guarantee.)
 
+### The exact preview → confirm wire shapes
+
+The preview call's result carries both `content[0].text` (JSON-encoded, for clients that
+only read `content`) and `structuredContent` (for clients that read it directly):
+
+```json
+{
+  "status": "preview",
+  "summary": "Book 09:00",
+  "confirmationToken": "<opaque single-use token>"
+}
+```
+
+Call `confirm_request` with that token:
+
+```json
+{
+  "confirmationToken": "<token from the preview>",
+  "idempotencyKey": "<your own unique string per logical operation — e.g. a UUID you generate once per attempt, reused only on retry of the SAME attempt>"
+}
+```
+
+`confirm_request` is registered only when at least one mutating tool is granted to the
+caller; the mutating tools themselves are always listed regardless of grant — see the
+README's scope-gating section for why. So if none of your mutating tools are granted to a
+given caller, `confirm_request` won't appear in that caller's `tools/list` either.
+
 ## 7. Drive the full OAuth + MCP flow (end to end)
 
 This is what a spec-compliant MCP client does under the hood. You can reproduce it with `curl`
 to verify your server. It uses PKCE (S256).
+
+> **Both `Accept` values are required.** `POST /mcp` requires
+> `accept: application/json, text/event-stream` — the SDK transport rejects a request
+> missing either value with `406 Not Acceptable`, even though this kit's stateless JSON
+> mode never actually streams SSE. The curl commands below include it; a plain
+> `fetch`/Postman request that omits it will fail.
 
 ```bash
 BASE=http://localhost:3000

@@ -168,6 +168,36 @@ it("defaults client_id_metadata_document_supported to false", async () => {
   expect((await res.json()).client_id_metadata_document_supported).toBe(false);
 });
 
+describe("discovery metadata — 2026-07-28 fixes", () => {
+  it("advertises authorization_response_iss_parameter_supported", async () => {
+    const res = await appUnderTest().request("/.well-known/oauth-authorization-server");
+    const body = await res.json();
+    expect(body.authorization_response_iss_parameter_supported).toBe(true);
+  });
+
+  it("does not include a non-standard resource field in AS metadata", async () => {
+    const res = await appUnderTest().request("/.well-known/oauth-authorization-server");
+    const body = await res.json();
+    expect(body.resource).toBeUndefined();
+  });
+
+  it("includes scopes_supported in Protected Resource Metadata", async () => {
+    const res = await appUnderTest().request("/.well-known/oauth-protected-resource");
+    const body = await res.json();
+    expect(body.scopes_supported).toEqual(["account:read"]);
+  });
+
+  it("serves identical Protected Resource Metadata at the /mcp sub-path", async () => {
+    const root = await (
+      await appUnderTest().request("/.well-known/oauth-protected-resource")
+    ).json();
+    const subPath = await (
+      await appUnderTest().request("/.well-known/oauth-protected-resource/mcp")
+    ).json();
+    expect(subPath).toEqual(root);
+  });
+});
+
 describe("POST /register — application_type", () => {
   it("accepts and echoes a valid application_type", async () => {
     const res = await appUnderTest().request("/register", {
@@ -196,5 +226,98 @@ describe("POST /register — application_type", () => {
       body: JSON.stringify({ redirect_uris: ["https://app/cb"] }),
     });
     expect((await res.json()).application_type).toBeUndefined();
+  });
+});
+
+describe("GET /authorize — redirect URI display", () => {
+  it("shows the redirect URI hostname on the login page", async () => {
+    const app = new Hono();
+    const provider = createOAuthProvider({ storage: createMemoryStorage(), scopes, baseUrl });
+    mountOAuthRoutes(app, {
+      provider,
+      baseUrl,
+      identity: { fields: [{ name: "email", label: "Email" }], verify: async () => "user-1" },
+    });
+    const { client_id } = await (
+      await app.request("/register", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ redirect_uris: ["https://app.example.com/cb"] }),
+      })
+    ).json();
+
+    const res = await app.request(
+      `/authorize?response_type=code&client_id=${client_id}&redirect_uri=${encodeURIComponent("https://app.example.com/cb")}&code_challenge=x&code_challenge_method=S256`,
+    );
+    const html = await res.text();
+    // Assert on the new redirect-notice element specifically, not just any occurrence of
+    // the hostname (which also appears — trivially — in the pre-existing hidden
+    // redirect_uri input's value attribute).
+    expect(html).toContain('class="redirect-notice"');
+    expect(html).toContain("<strong>app.example.com</strong>");
+  });
+
+  it("HTML-escapes the displayed hostname (regression: dropping escapeHtml must fail this)", async () => {
+    // `&` is not rejected or percent-encoded by WHATWG URL host parsing — it survives
+    // verbatim into `url.hostname` — and survives encodeURIComponent/query-string
+    // transport unchanged too, so it's a real, reachable payload for this code path
+    // (verified: `new URL("https://app&x.example.com/cb").hostname === "app&x.example.com"`).
+    // `<` and `>` are rejected outright by URL host parsing (Invalid URL), so they can't
+    // reach this code path — `&` is the reachable HTML-metacharacter proof that
+    // escapeHtml() is actually being applied to redirectHostname.
+    const app = new Hono();
+    const provider = createOAuthProvider({ storage: createMemoryStorage(), scopes, baseUrl });
+    mountOAuthRoutes(app, {
+      provider,
+      baseUrl,
+      identity: { fields: [{ name: "email", label: "Email" }], verify: async () => "user-1" },
+    });
+    const redirectUri = "https://app&x.example.com/cb";
+    const { client_id } = await (
+      await app.request("/register", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ redirect_uris: [redirectUri] }),
+      })
+    ).json();
+
+    const res = await app.request(
+      `/authorize?response_type=code&client_id=${client_id}&redirect_uri=${encodeURIComponent(redirectUri)}&code_challenge=x&code_challenge_method=S256`,
+    );
+    const html = await res.text();
+    expect(html).toContain(
+      'class="redirect-notice">Signing in to: <strong>app&amp;x.example.com</strong></div>',
+    );
+    // The unescaped raw form must never appear inside the notice text.
+    expect(html).not.toContain("<strong>app&x.example.com</strong>");
+  });
+
+  it("warns when the redirect URI is localhost", async () => {
+    const app = new Hono();
+    const provider = createOAuthProvider({ storage: createMemoryStorage(), scopes, baseUrl });
+    mountOAuthRoutes(app, {
+      provider,
+      baseUrl,
+      identity: { fields: [{ name: "email", label: "Email" }], verify: async () => "user-1" },
+    });
+    const { client_id } = await (
+      await app.request("/register", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ redirect_uris: ["http://localhost:9999/cb"] }),
+      })
+    ).json();
+
+    const res = await app.request(
+      `/authorize?response_type=code&client_id=${client_id}&redirect_uri=${encodeURIComponent("http://localhost:9999/cb")}&code_challenge=x&code_challenge_method=S256`,
+    );
+    const html = await res.text();
+    expect(html.toLowerCase()).toContain("localhost");
+    expect(html.toLowerCase()).toMatch(/warn|caution|note/);
+  });
+
+  it("sets frame-ancestors none on the authorize CSP", async () => {
+    const res = await appUnderTest().request("/authorize");
+    expect(res.headers.get("content-security-policy")).toContain("frame-ancestors 'none'");
   });
 });

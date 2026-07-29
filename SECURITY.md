@@ -46,6 +46,17 @@ from the default Cloudflare-KV-style storage backend, which has no compare-and-s
   brute-force guards can be bypassed with a spoofed header.
 - **In-memory storage is for tests only.** `createMemoryStorage()` is not persistent or
   shared across isolates; never use it in production.
+- **Storage keys are not namespaced by `baseUrl`.** If two servers built with this kit
+  share one KV namespace, a token/client/code issued by one is resolvable by the other
+  (all keys are `mcp:<kind>:<hash>`, with no per-deployment prefix). Use a separate KV
+  namespace/database per deployment, or don't share storage across distinct `baseUrl`s.
+- **The CIMD redirect-URI cache lifetime is attacker-influenced within a bounded range.**
+  When `allowClientIdMetadataDocuments` is enabled, the cache TTL for a fetched document
+  honors that document's own `Cache-Control: max-age` (clamped to 60s–24h) instead of a
+  fixed 1-hour TTL. This is a deliberate spec-compliant tradeoff, not a bug — but it means
+  the party publishing the CIMD document (also the party whose `redirect_uris` you'd want
+  to revoke quickly after a compromise) can elect a cache lifetime up to 24x longer than
+  the previous fixed default.
 
 Reports that depend on misconfiguring these (e.g. using memory storage in production, or
 running off-Cloudflare without an `ipExtractor`) are out of scope.

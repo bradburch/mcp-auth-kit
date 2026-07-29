@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { createMemoryStorage } from "../../src/storage/memory.js";
 import { createOAuthProvider } from "../../src/oauth/provider.js";
+import { sha256Hex } from "../../src/crypto.js";
 import { pkce } from "../helpers.js";
 
 const scopes = [
@@ -233,5 +234,28 @@ describe("Client ID Metadata Document resolution", () => {
     expect(first).toBe(false);
     expect(second).toBe(false);
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("verifyAccessToken — audience re-check", () => {
+  it("rejects a token record whose resource doesn't match this server's expected resource", async () => {
+    const storage = createMemoryStorage();
+    const provider = createOAuthProvider({ storage, scopes, baseUrl });
+    // Simulate a token that was somehow stored with a foreign resource (defense in depth —
+    // this shouldn't happen via the normal issue/exchange path, which is exactly why it's
+    // worth a redundant check here rather than relying solely on that path being correct).
+    const token = "test-foreign-token";
+    const tokenHash = await sha256Hex(token);
+    await storage.put(
+      `mcp:token:${tokenHash}`,
+      JSON.stringify({
+        userId: "u1",
+        clientId: "c1",
+        resource: "https://other-server.example.test/mcp",
+        scope: ["account:read"],
+        createdAt: Date.now(),
+      }),
+    );
+    expect(await provider.verifyAccessToken(token)).toBeNull();
   });
 });

@@ -33,6 +33,21 @@ function safeAccent(value: string | undefined): string {
   return value && /^#[0-9a-fA-F]{3,8}$/.test(value) ? value : DEFAULT_ACCENT;
 }
 
+/**
+ * Extract the redirect URI's hostname for display, and whether it's a localhost target
+ * (security-considerations: "MUST clearly display the redirect URI hostname" and "SHOULD
+ * display additional warnings for localhost-only redirect URIs").
+ */
+function redirectUriDisplay(redirectUri: string): { hostname: string; isLocalhost: boolean } {
+  try {
+    const url = new URL(redirectUri);
+    const isLocalhost = url.hostname === "localhost" || url.hostname === "127.0.0.1";
+    return { hostname: url.hostname, isLocalhost };
+  } catch {
+    return { hostname: "(invalid redirect URI)", isLocalhost: false };
+  }
+}
+
 function escapeHtml(s: string): string {
   return s
     .replace(/&/g, "&amp;")
@@ -91,6 +106,11 @@ export function renderAuthorizePage(identity: IdentityConfig, params: AuthorizeP
 
   const errorHtml = params.error ? `<div class="error">${escapeHtml(params.error)}</div>` : "";
 
+  const { hostname: redirectHostname, isLocalhost } = redirectUriDisplay(params.redirect_uri);
+  const redirectNoticeHtml = isLocalhost
+    ? `<div class="redirect-notice warn">⚠ Signing in to a request from <strong>${escapeHtml(redirectHostname)}</strong> (localhost) — only continue if you started this yourself.</div>`
+    : `<div class="redirect-notice">Signing in to: <strong>${escapeHtml(redirectHostname)}</strong></div>`;
+
   const logoHtml = logoUrlSafe ? `<img class="logo" src="${logoUrlSafe}" alt="${appName}" />` : "";
 
   return `<!DOCTYPE html>
@@ -111,6 +131,8 @@ export function renderAuthorizePage(identity: IdentityConfig, params: AuthorizeP
     button { width: 100%; padding: 0.7rem; background: ${accent}; color: white; border: none; border-radius: 8px; font-size: 1rem; font-weight: 500; cursor: pointer; }
     button:hover { filter: brightness(0.95); }
     .error { background: #fef2f2; color: #991b1b; padding: 0.75rem; border-radius: 8px; margin-bottom: 1rem; font-size: 0.85rem; }
+    .redirect-notice { font-size: 0.85rem; color: #555; margin-bottom: 1rem; }
+    .redirect-notice.warn { background: #fffbeb; color: #92400e; padding: 0.75rem; border-radius: 8px; }
   </style>
 </head>
 <body>
@@ -118,6 +140,7 @@ export function renderAuthorizePage(identity: IdentityConfig, params: AuthorizeP
     ${logoHtml}
     <h1>${appName}</h1>
     ${errorHtml}
+    ${redirectNoticeHtml}
     <form method="POST" action="/authorize">
       ${hiddenInputs}
 ${fieldInputs}
