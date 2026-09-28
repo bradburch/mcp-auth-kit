@@ -44,7 +44,7 @@ export interface IdentityConfig {
 /** Optional async observability callbacks. */
 export interface ObservabilityHooks {
   /**
-   * Called after every tool invocation. Fire-and-forget — errors are swallowed
+   * Called when a tool is invoked (concurrently with the handler). Fire-and-forget — errors are swallowed
    * so a throwing hook never fails the request.
    */
   onToolCall?(event: {
@@ -67,7 +67,39 @@ export interface ObservabilityHooks {
    * confirm flow (durable side-effect, e.g. an audit-ledger write).
    */
   onMutation?(event: { userId: string; toolName: string; summary: string }): Promise<void>;
+  /**
+   * Called when a tool handler, mutating `preview`, or mutating `execute` throws (or returns
+   * a value that can't be serialized), or a storage call in the mutating flow fails. The
+   * client only sees a generic message (or a `ToolError`'s message), so this is where the
+   * real error surfaces. Fire-and-forget. `phase: "storage"` after `execute` means the side
+   * effect DID happen but its result couldn't be cached for idempotent replay.
+   */
+  onToolError?(event: {
+    userId: string;
+    toolName: string;
+    phase: ToolErrorPhase;
+    error: unknown;
+  }): Promise<void>;
 }
+
+/** Where a tool failure happened, as reported to `onToolError`. */
+export type ToolErrorPhase = "handler" | "preview" | "execute" | "storage";
+
+/** Global-registry brand, so a ToolError from a duplicate copy of this package still matches. */
+export const TOOL_ERROR_BRAND = Symbol.for("mcp-oauth-kit.ToolError");
+
+/**
+ * Throw from a handler, `preview`, or `execute` to reject with a message the client sees
+ * verbatim (e.g. "09:00 is already booked"). Any other thrown error is replaced with a
+ * generic message so internals never leak.
+ */
+export class ToolError extends Error {
+  override name = "ToolError";
+  readonly [TOOL_ERROR_BRAND] = true;
+}
+
+/** Handler input type. `unknown` (not zod 3's `any`) when the schema type isn't known. */
+type Input<S extends z.ZodTypeAny> = unknown extends z.infer<S> ? unknown : z.infer<S>;
 
 /** Runtime context passed to every tool handler. */
 export interface ToolContext {
@@ -84,30 +116,54 @@ export interface ToolContext {
   hooks: ObservabilityHooks;
 }
 
-/** A standard (read / non-mutating) tool definition. */
-export interface ToolDef {
+/** A standard (read / non-mutating) tool definition. Wrap in `defineTool` for typed `input`. */
+export interface ToolDef<S extends z.ZodTypeAny = z.ZodTypeAny> {
   name: string;
   description: string;
-  inputSchema: z.ZodTypeAny;
+  /**
+   * Must be a `z.object(...)` — the MCP tool input schema is always a JSON object. Under zod 4
+   * `.refine()` on it is allowed and runs; wrappers like `.transform()` are rejected.
+   */
+  inputSchema: S;
   /** OAuth scope required to call this tool (omit = no scope check). */
   scope?: string;
   annotations?: Record<string, unknown>;
-  handler(input: unknown, ctx: ToolContext): Promise<unknown>;
+  /**
+   * Return a string (→ one text block), an MCP CallToolResult (`{ content: [...] }`, passed
+   * through), or any other JSON-serializable value (→ one JSON text block).
+   */
+  handler(input: Input<S>, ctx: ToolContext): Promise<unknown>;
 }
 
 /** A mutating tool definition using the two-phase preview → execute pattern. */
-export interface MutatingToolDef {
+export interface MutatingToolDef<S extends z.ZodTypeAny = z.ZodTypeAny, D = unknown> {
   name: string;
   description: string;
-  inputSchema: z.ZodTypeAny;
+  /**
+   * Must be a `z.object(...)` — the MCP tool input schema is always a JSON object. Under zod 4
+   * `.refine()` on it is allowed and runs; wrappers like `.transform()` are rejected.
+   */
+  inputSchema: S;
   scope?: string;
   annotations?: Record<string, unknown>;
   mutating: {
     /** Phase 1: validate input and return a human-readable preview. */
-    preview(input: unknown, ctx: ToolContext): Promise<{ summary: string; data: unknown }>;
-    /** Phase 2: carry out the side effect using the preview data. */
-    execute(data: unknown, ctx: ToolContext): Promise<unknown>;
+    preview(input: Input<S>, ctx: ToolContext): Promise<{ summary: string; data: D }>;
+    /** Phase 2: carry out the side effect using the preview data. Returns like `handler`. */
+    execute(data: D, ctx: ToolContext): Promise<unknown>;
   };
+}
+
+/**
+ * Identity helper that infers `input` (from `inputSchema`) and mutating `data` (from
+ * `preview`'s return) so handlers need no casts. Same role as FastMCP's `addTool`.
+ */
+export function defineTool<S extends z.ZodTypeAny>(tool: ToolDef<S>): ToolDef<S>;
+export function defineTool<S extends z.ZodTypeAny, D>(
+  tool: MutatingToolDef<S, D>,
+): MutatingToolDef<S, D>;
+export function defineTool(tool: ToolDef | MutatingToolDef) {
+  return tool;
 }
 
 /** Type guard: true when `t` is a MutatingToolDef. */
@@ -132,6 +188,10 @@ export interface RateLimitConfig {
 export interface McpServerConfig {
   /** Public base URL of this server (used to build OAuth redirect URIs). */
   baseUrl: string;
+  /** Server name reported to MCP clients in `initialize`. Default: "mcp-oauth-kit". */
+  name?: string;
+  /** Server version reported to MCP clients in `initialize`. Default: the kit's version. */
+  version?: string;
   storage: KvLike;
   scopes: ScopeConfig[];
   identity?: IdentityConfig;

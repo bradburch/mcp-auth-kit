@@ -19,7 +19,7 @@ export { renderAuthorizePage } from "./identity/page.js";
 export type { AuthorizePageParams } from "./identity/page.js";
 
 // Config types + helpers.
-export { isMutating } from "./config.js";
+export { isMutating, defineTool, ToolError } from "./config.js";
 export type {
   McpServerConfig,
   ScopeConfig,
@@ -31,6 +31,7 @@ export type {
   ToolDef,
   MutatingToolDef,
   RateLimitConfig,
+  ToolErrorPhase,
 } from "./config.js";
 
 // ─── Advanced / low-level API ─────────────────────────────────────────────────

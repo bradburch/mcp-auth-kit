@@ -14,7 +14,7 @@ import { mountDiscovery } from "./oauth/discovery.js";
 import { createRateLimiter } from "./rate-limit.js";
 import { handleMcpRequest, jsonRpcError, JSON_RPC_ERROR } from "./transport.js";
 
-/** Default server identity reported to MCP clients (adopter can't yet override). */
+/** Default server identity reported to MCP clients (override via config.name / config.version). */
 const DEFAULT_SERVER_NAME = "mcp-oauth-kit";
 // Keep in sync with package.json's "version" — nothing enforces this automatically.
 const DEFAULT_SERVER_VERSION = "0.2.0";
@@ -36,11 +36,43 @@ function assertHttpsBaseUrl(baseUrl: string): void {
 }
 
 /**
+ * Catch tool-config mistakes at startup instead of on every request: the SDK throws on a
+ * duplicate registration per request, a scope nobody can be granted silently locks a tool,
+ * and a schema without an object `.shape` (z.string(), or a wrapper like .transform()) would
+ * be advertised in tools/list as an empty object, so clients couldn't know its arguments.
+ */
+function assertValidTools(config: McpServerConfig): void {
+  const declared = new Set(config.scopes.map((s) => s.name));
+  const seen = new Set<string>();
+  for (const tool of config.tools) {
+    if (tool.name === "confirm_request") {
+      throw new Error(`Tool name "confirm_request" is reserved for the two-phase confirm flow.`);
+    }
+    if (seen.has(tool.name)) throw new Error(`Duplicate tool name "${tool.name}".`);
+    seen.add(tool.name);
+    if (tool.scope !== undefined && !declared.has(tool.scope)) {
+      throw new Error(
+        `Tool "${tool.name}" requires undeclared scope "${tool.scope}" — add it to config.scopes.`,
+      );
+    }
+    // Duck-typed, not `instanceof z.ZodObject`: the adopter's schema may come from a different
+    // zod build (e.g. `zod/v4` under zod@3.25) than the one this module resolves.
+    const shape = (tool.inputSchema as { shape?: unknown }).shape;
+    if (typeof shape !== "object" || shape === null) {
+      throw new Error(
+        `Tool "${tool.name}": inputSchema must be a z.object(...) — wrappers like .transform()/.pipe()/.default() (and .refine() under zod 3) hide its shape from tools/list; validate those inside the handler instead.`,
+      );
+    }
+  }
+}
+
+/**
  * Build the runnable MCP server as a Hono app. Mounts discovery + OAuth routes and the
  * MCP transport. The caller owns feature-gating (wrap with their own middleware if desired).
  */
 export function createMcpServer(config: McpServerConfig): Hono {
   assertHttpsBaseUrl(config.baseUrl);
+  assertValidTools(config);
 
   const app = new Hono();
 
@@ -81,8 +113,8 @@ export function createMcpServer(config: McpServerConfig): Hono {
       storage: config.storage,
       tools: config.tools,
       baseUrl: config.baseUrl,
-      serverName: DEFAULT_SERVER_NAME,
-      serverVersion: DEFAULT_SERVER_VERSION,
+      serverName: config.name ?? DEFAULT_SERVER_NAME,
+      serverVersion: config.version ?? DEFAULT_SERVER_VERSION,
       env: c.env,
       hooks,
       defaultScopes: config.scopes.filter((s) => s.default).map((s) => s.name),

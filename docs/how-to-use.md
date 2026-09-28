@@ -228,26 +228,23 @@ then calls the built-in `confirm_request` tool with that token and a unique `ide
 actually execute. This gives the human/agent a chance to review the action first.
 
 ```ts
-{
+defineTool({
   name: "book_slot",
   description: "Book an appointment slot.",
   scope: "write",
   inputSchema: z.object({ slot: z.string() }),
   mutating: {
-    // Phase 1 — validate + describe. NO side effect here.
-    preview: async (input) => {
-      const { slot } = input as { slot: string };
-      return { summary: `Book ${slot}`, data: { slot } };
-    },
+    // Phase 1 — validate + describe. NO side effect here. `slot` is typed from inputSchema.
+    preview: async ({ slot }) => ({ summary: `Book ${slot}`, data: { slot } }),
     // Phase 2 — runs only after confirm_request with the token from phase 1.
-    execute: async (data, ctx) => {
-      const { slot } = data as { slot: string };
+    // `data` is typed from preview's return value.
+    execute: async ({ slot }, ctx) => {
       // Replace with your real persistence — this illustrates where the side effect goes.
       console.log(`booking ${slot} for ${ctx.userId}`);
-      return { content: [{ type: "text", text: `Booked ${slot}.` }] };
+      return `Booked ${slot}.`;
     },
   },
-}
+});
 ```
 
 The confirmation token is bound to the user who previewed it, expires after 5 minutes, and is

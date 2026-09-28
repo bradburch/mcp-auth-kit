@@ -25,7 +25,7 @@ Node **22+** is required, and your project must be ESM (`"type": "module"` in
 
 ```ts
 import { z } from "zod";
-import { createMcpServer, createMemoryStorage } from "mcp-oauth-kit";
+import { createMcpServer, createMemoryStorage, defineTool } from "mcp-oauth-kit";
 
 const app = createMcpServer({
   baseUrl: "https://mcp.example.com",
@@ -51,30 +51,23 @@ const app = createMcpServer({
     },
   },
   tools: [
-    {
+    defineTool({
       name: "list_slots",
       description: "List available appointment slots for today.",
       inputSchema: z.object({}),
-      handler: async (_input, _ctx) => ({
-        content: [{ type: "text", text: "09:00, 10:00, 11:00" }],
-      }),
-    },
-    {
+      handler: async () => "09:00, 10:00, 11:00", // strings become text content
+    }),
+    defineTool({
       name: "book_slot",
       description: "Book an appointment slot.",
       scope: "write",
       inputSchema: z.object({ slot: z.string() }),
       mutating: {
-        preview: async (input) => {
-          const { slot } = input as { slot: string };
-          return { summary: `book ${slot}`, data: { slot } };
-        },
-        execute: async (data) => {
-          const { slot } = data as { slot: string };
-          return { content: [{ type: "text", text: `Booked ${slot}.` }] };
-        },
+        // `slot` is typed from inputSchema; `data` in execute is typed from preview's return.
+        preview: async ({ slot }) => ({ summary: `book ${slot}`, data: { slot } }),
+        execute: async ({ slot }) => `Booked ${slot}.`,
       },
-    },
+    }),
   ],
 });
 
@@ -91,6 +84,7 @@ See `examples/appointments/server.ts` for a complete working server.
 | Field                            | Type                                | Required | Description                                                                                                                                                                                                                                                         |
 | -------------------------------- | ----------------------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `baseUrl`                        | `string`                            | Yes      | Public base URL of this server (used in OAuth discovery and redirect URIs). Must be `https://` unless the hostname is `localhost`/`127.0.0.1` — the server throws at construction time otherwise.                                                                   |
+| `name` / `version`               | `string`                            | No       | Server identity reported to MCP clients on `initialize`. Defaults to `mcp-oauth-kit` / the kit version.                                                                                                                                                             |
 | `storage`                        | `KvLike`                            | Yes      | Key-value store for tokens, rate-limit counters, and idempotency records.                                                                                                                                                                                           |
 | `scopes`                         | `ScopeConfig[]`                     | Yes      | OAuth scopes the server advertises.                                                                                                                                                                                                                                 |
 | `identity`                       | `IdentityConfig`                    | No       | Built-in login-form identity provider. Omit to use a custom provider.                                                                                                                                                                                               |
@@ -161,13 +155,27 @@ createMcpServer({
 
 All callbacks are fire-and-forget except `onMutation` (which is awaited). Errors are swallowed so a throwing hook never fails the request.
 
-| Field        | Type                       | Description                                                                                                 |
-| ------------ | -------------------------- | ----------------------------------------------------------------------------------------------------------- |
-| `onToolCall` | `(event) => Promise<void>` | Called after every tool invocation.                                                                         |
-| `onAudit`    | `(event) => Promise<void>` | Called on OAuth lifecycle events (`client_registered`, `token_issued`, `token_refreshed`, `token_revoked`). |
-| `onMutation` | `(event) => Promise<void>` | Called (awaited) after a mutating tool's execute phase succeeds.                                            |
+| Field         | Type                       | Description                                                                                                                                                                                                                                                                                                                                             |
+| ------------- | -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `onToolCall`  | `(event) => Promise<void>` | Called when a tool is invoked (including a mutating tool's preview call), concurrently with the handler. `event.input` is the same object the handler receives.                                                                                                                                                                                         |
+| `onAudit`     | `(event) => Promise<void>` | Called on OAuth lifecycle events (`client_registered`, `token_issued`, `token_refreshed`, `token_revoked`).                                                                                                                                                                                                                                             |
+| `onMutation`  | `(event) => Promise<void>` | Called (awaited) after a mutating tool's execute phase succeeds.                                                                                                                                                                                                                                                                                        |
+| `onToolError` | `(event) => Promise<void>` | Called when a handler, `preview`, or `execute` throws or returns an unserializable value, or a storage call in the mutating flow fails. `event.phase` is `handler`/`preview`/`execute`/`storage`; `event.error` is the real error the client never sees. A `storage` event after `execute` means the side effect happened but its result wasn't cached. |
 
 ## Tool definitions
+
+Wrap each tool in `defineTool(...)` so `input` is typed from `inputSchema` (and a mutating tool's `execute` data from `preview`) — the FastMCP-style ergonomics. A handler may return a string (one text block), an MCP `{ content: [...] }` result (passed through), or any other JSON-serializable value (serialized as text). `createMcpServer` throws at startup on duplicate tool names, a tool named `confirm_request`, a `scope` missing from `scopes`, or an `inputSchema` that isn't a `z.object` — wrappers like `.transform()` (and `.refine()` under zod 3) are rejected because they'd advertise an empty schema; under zod 4, `.refine()` on the object is allowed and runs.
+
+**Errors.** A thrown error reaches the client as a generic "Tool execution failed" (and is reported to the `onToolError` hook). To reject with a reason the client should see, throw `ToolError` (instances of `ToolError`, or an `Error` carrying its `Symbol.for("mcp-oauth-kit.ToolError")` brand so duplicate package copies interoperate, are forwarded — an unrelated error that merely has `name === "ToolError"` stays generic):
+
+```ts
+import { ToolError } from "mcp-oauth-kit";
+
+preview: async ({ slot }) => {
+  if (await isBooked(slot)) throw new ToolError(`${slot} is already booked`);
+  return { summary: `book ${slot}`, data: { slot } };
+},
+```
 
 Each tool in the `tools` array is either a `ToolDef` (has a `handler` — called directly) or a `MutatingToolDef` (has a `mutating.preview` and `mutating.execute` — uses the two-phase confirm flow). The two shapes are mutually exclusive.
 
@@ -229,23 +237,19 @@ Mutating tools never execute their side effect on the first call. The flow is:
 > can re-run.
 
 ```ts
-{
+defineTool({
   name: "book_slot",
   description: "Book an appointment slot.",
   scope: "write",
   inputSchema: z.object({ slot: z.string() }),
   mutating: {
-    preview: async (input) => {
-      const { slot } = input as { slot: string };
-      return { summary: `book ${slot}`, data: { slot } };
-    },
-    execute: async (data, ctx) => {
-      const { slot } = data as { slot: string };
+    preview: async ({ slot }) => ({ summary: `book ${slot}`, data: { slot } }),
+    execute: async ({ slot }, ctx) => {
       // carry out the side effect here
-      return { content: [{ type: "text", text: `Booked ${slot}.` }] };
+      return `Booked ${slot}.`;
     },
   },
-}
+});
 ```
 
 #### `confirm_request` tool
@@ -320,6 +324,8 @@ See [docs/deploy.md](docs/deploy.md) for runtime-specific entry-point wrappers (
 - `createCloudflareKvStorage(kv)` — wraps a Cloudflare KV namespace
 - `registerMutatingTool(server, tool, ctx)` — low-level registration helper
 - `registerConfirmTool(server, ctx, mutatingTools)` — low-level confirm registration
+- `defineTool(tool)` — typed tool helper (infers handler input from `inputSchema`)
+- `ToolError` — throw to reject a tool call with a client-visible message
 - `isMutating(t)` — type guard: `true` when `t` is a `MutatingToolDef`
 
 Types: `McpServerConfig`, `ScopeConfig`, `IdentityField`, `IdentityConfig`, `Branding`, `ObservabilityHooks`, `ToolContext`, `ToolDef`, `MutatingToolDef`, `RateLimitConfig`, `KvLike`, `KVNamespaceLike`, `AuthorizePageParams`
