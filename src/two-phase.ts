@@ -16,9 +16,8 @@
 // (e.g. a Durable Object). On execute failure the key is deleted so a legitimate retry re-runs.
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import type { MutatingToolDef, ToolContext } from "./config.js";
+import { ToolError, type MutatingToolDef, type ToolContext } from "./config.js";
 import { confirmKey, idempotencyKey } from "./storage/keys.js";
-import { toShape } from "./tools/shape.js";
 import { randomToken } from "./crypto.js";
 
 /** Confirmation-token TTL — a previewed mutation expires after 5 minutes. */
@@ -42,28 +41,60 @@ interface ConfirmPayload {
 /** A tool result with MCP content (what tool handlers must return). */
 type ToolResult = {
   content: Array<{ type: "text"; text: string }>;
+  structuredContent?: Record<string, unknown>;
   isError?: boolean;
 };
 
 /** Generic client-facing message when a tool handler throws — raw errors never reach the client. */
 const TOOL_ERROR_MESSAGE = "Tool execution failed. Please try again.";
 
-/** The sanitized isError result returned in place of a thrown handler error. */
-export const toolErrorResult = (): ToolResult => ({
-  content: [{ type: "text", text: TOOL_ERROR_MESSAGE }],
-  isError: true,
-});
+/** isError result for a thrown error: a `ToolError`'s message verbatim, otherwise generic. */
+function toolErrorResult(error?: unknown): ToolResult {
+  const text = error instanceof ToolError ? error.message : TOOL_ERROR_MESSAGE;
+  return { content: [{ type: "text", text }], isError: true };
+}
+
+/** Report a tool failure to `onToolError` (fire-and-forget) and return the sanitized result. */
+export function toolFailure(
+  ctx: ToolContext,
+  toolName: string,
+  phase: "handler" | "preview" | "execute",
+  error: unknown,
+): ToolResult {
+  void Promise.resolve()
+    .then(() => ctx.hooks.onToolError?.({ userId: ctx.userId, toolName, phase, error }))
+    .catch(() => {});
+  return toolErrorResult(error);
+}
+
+/** Fire onToolCall (fire-and-forget — a misbehaving hook never fails the tool request). */
+export function fireToolCall(ctx: ToolContext, toolName: string, input: unknown): void {
+  void Promise.resolve()
+    .then(() => ctx.hooks.onToolCall?.({ userId: ctx.userId, toolName, channel: "mcp", input }))
+    .catch(() => {});
+}
+
+/** True when `value` looks like an MCP CallToolResult (every content item has a string type). */
+function isCallToolResult(value: unknown): value is ToolResult {
+  const content = (value as { content?: unknown } | null)?.content;
+  return (
+    Array.isArray(content) &&
+    content.every((c) => typeof (c as { type?: unknown } | null)?.type === "string")
+  );
+}
 
 /**
  * Normalize a handler's return value into an MCP CallToolResult: a string becomes one text
- * block, an object with a `content` array passes through, anything else is JSON text.
+ * block, a CallToolResult passes through, anything else is JSON text. Throws if the value
+ * can't be serialized (BigInt, cycles) — callers treat that as a tool failure.
  */
 export function toToolResult(value: unknown): ToolResult {
   if (typeof value === "string") return { content: [{ type: "text", text: value }] };
-  if (value !== null && typeof value === "object" && Array.isArray((value as ToolResult).content)) {
-    return value as ToolResult;
-  }
-  return { content: [{ type: "text", text: JSON.stringify(value) ?? "null" }] };
+  const result: ToolResult = isCallToolResult(value)
+    ? value
+    : { content: [{ type: "text", text: JSON.stringify(value) ?? "null" }] };
+  JSON.stringify(result); // surface unserializable passthrough values here, not in the transport
+  return result;
 }
 
 /** Wrap an arbitrary JSON-serialisable value as a single-text-block tool result. */
@@ -85,18 +116,18 @@ export function registerMutatingTool(
   tool: MutatingToolDef,
   ctx: ToolContext,
 ): void {
-  const shape = toShape(tool.inputSchema);
   const annotations = { destructiveHint: true, ...(tool.annotations ?? {}) };
 
   server.registerTool(
     tool.name,
-    { description: tool.description, inputSchema: shape, annotations },
+    { description: tool.description, inputSchema: tool.inputSchema, annotations },
     async (input: unknown) => {
+      fireToolCall(ctx, tool.name, input);
       let preview: { summary: string; data: unknown };
       try {
         preview = await tool.mutating.preview(input, ctx);
-      } catch {
-        return toolErrorResult();
+      } catch (e) {
+        return toolFailure(ctx, tool.name, "preview", e);
       }
 
       const token = randomToken();
@@ -167,8 +198,15 @@ export function registerConfirmTool(
             error: "This request is already being processed — please retry in a moment.",
           });
         }
-        // Cached result — replay without re-executing.
-        return JSON.parse(cached) as ToolResult;
+        // Cached result — replay without re-executing. A corrupt entry gets a generic error
+        // (a JSON.parse message would echo the stored string back to the client).
+        try {
+          const replay: unknown = JSON.parse(cached);
+          if (isCallToolResult(replay)) return replay;
+        } catch {
+          // fall through
+        }
+        return toolErrorResult();
       }
 
       // (b) Claim the key with the pending sentinel, then load + delete the confirm token
@@ -223,27 +261,41 @@ export function registerConfirmTool(
         });
       }
 
-      // (c)/(d) Execute; on success cache the result and fire the (awaited) mutation hook.
+      // (c) Execute. Only a throw from execute itself counts as failure: release the claim so
+      //     a legitimate retry can re-run.
+      let raw: unknown;
       try {
-        const result = toToolResult(await tool.mutating.execute(payload.data, ctx));
-        const resultJson = JSON.stringify(result);
+        raw = await tool.mutating.execute(payload.data, ctx);
+      } catch (e) {
+        await ctx.storage.delete(idemKey);
+        return toolFailure(ctx, payload.toolName, "execute", e);
+      }
 
-        await ctx.storage.put(idemKey, resultJson, {
-          ttlSeconds: IDEMPOTENCY_TTL_SECONDS,
-        });
+      // (d) The side effect HAS happened — from here on never report failure or release the
+      //     claim, or the client's retry would run it twice. An unserializable result is
+      //     reported to onToolError and replaced with a generic success.
+      let result: ToolResult;
+      try {
+        result = toToolResult(raw);
+      } catch (e) {
+        toolFailure(ctx, payload.toolName, "execute", e);
+        result = jsonResult({ success: true });
+      }
+      await ctx.storage.put(idemKey, JSON.stringify(result), {
+        ttlSeconds: IDEMPOTENCY_TTL_SECONDS,
+      });
 
+      try {
         await ctx.hooks.onMutation?.({
           userId: ctx.userId,
           toolName: payload.toolName,
           summary: payload.summary,
         });
-
-        return result;
       } catch {
-        // (e) Execution failed — release the claim so a legitimate retry can re-run.
-        await ctx.storage.delete(idemKey);
-        return toolErrorResult();
+        // Swallowed like every hook — the mutation already succeeded.
       }
+
+      return result;
     },
   );
 }

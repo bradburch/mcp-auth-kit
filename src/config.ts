@@ -67,7 +67,30 @@ export interface ObservabilityHooks {
    * confirm flow (durable side-effect, e.g. an audit-ledger write).
    */
   onMutation?(event: { userId: string; toolName: string; summary: string }): Promise<void>;
+  /**
+   * Called when a tool handler, mutating `preview`, or mutating `execute` throws (or returns
+   * a value that can't be serialized). The client only sees a generic message (or a
+   * `ToolError`'s message), so this is where the real error surfaces. Fire-and-forget.
+   */
+  onToolError?(event: {
+    userId: string;
+    toolName: string;
+    phase: "handler" | "preview" | "execute";
+    error: unknown;
+  }): Promise<void>;
 }
+
+/**
+ * Throw from a handler, `preview`, or `execute` to reject with a message the client sees
+ * verbatim (e.g. "09:00 is already booked"). Any other thrown error is replaced with a
+ * generic message so internals never leak.
+ */
+export class ToolError extends Error {
+  override name = "ToolError";
+}
+
+/** Handler input type. `unknown` (not zod 3's `any`) when the schema type isn't known. */
+type Input<S extends z.ZodTypeAny> = unknown extends z.infer<S> ? unknown : z.infer<S>;
 
 /** Runtime context passed to every tool handler. */
 export interface ToolContext {
@@ -88,7 +111,10 @@ export interface ToolContext {
 export interface ToolDef<S extends z.ZodTypeAny = z.ZodTypeAny> {
   name: string;
   description: string;
-  /** Must be a `z.object(...)` — the MCP tool input schema is always a JSON object. */
+  /**
+   * Must be a `z.object(...)` — the MCP tool input schema is always a JSON object. Under zod 4
+   * `.refine()` on it is allowed and runs; wrappers like `.transform()` are rejected.
+   */
   inputSchema: S;
   /** OAuth scope required to call this tool (omit = no scope check). */
   scope?: string;
@@ -97,20 +123,23 @@ export interface ToolDef<S extends z.ZodTypeAny = z.ZodTypeAny> {
    * Return a string (→ one text block), an MCP CallToolResult (`{ content: [...] }`, passed
    * through), or any other JSON-serializable value (→ one JSON text block).
    */
-  handler(input: z.infer<S>, ctx: ToolContext): Promise<unknown>;
+  handler(input: Input<S>, ctx: ToolContext): Promise<unknown>;
 }
 
 /** A mutating tool definition using the two-phase preview → execute pattern. */
 export interface MutatingToolDef<S extends z.ZodTypeAny = z.ZodTypeAny, D = unknown> {
   name: string;
   description: string;
-  /** Must be a `z.object(...)` — the MCP tool input schema is always a JSON object. */
+  /**
+   * Must be a `z.object(...)` — the MCP tool input schema is always a JSON object. Under zod 4
+   * `.refine()` on it is allowed and runs; wrappers like `.transform()` are rejected.
+   */
   inputSchema: S;
   scope?: string;
   annotations?: Record<string, unknown>;
   mutating: {
     /** Phase 1: validate input and return a human-readable preview. */
-    preview(input: z.infer<S>, ctx: ToolContext): Promise<{ summary: string; data: D }>;
+    preview(input: Input<S>, ctx: ToolContext): Promise<{ summary: string; data: D }>;
     /** Phase 2: carry out the side effect using the preview data. Returns like `handler`. */
     execute(data: D, ctx: ToolContext): Promise<unknown>;
   };

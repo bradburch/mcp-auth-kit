@@ -10,24 +10,45 @@ All notable changes to this project are documented here. The format is based on
 
 - `defineTool(...)` — FastMCP-style typed tools: `input` is inferred from `inputSchema` and a
   mutating tool's `execute(data)` is typed from `preview`'s `data`, so handlers need no casts.
-- Handlers and `execute` may return a plain string (→ one text block) or any JSON value
-  (→ JSON text block); an MCP `{ content: [...] }` result still passes through unchanged.
+- Handlers and `execute` may return a plain string (→ one text block) or any JSON-serializable
+  value (→ JSON text block); an MCP `{ content: [...] }` result still passes through unchanged.
+- `ToolError` — throw it from a handler, `preview`, or `execute` to reject with a message the
+  client sees verbatim (e.g. "09:00 is already booked"). Any other error stays generic.
+- `onToolError` hook, fired when a handler/`preview`/`execute` throws or returns an
+  unserializable value — the real error is no longer invisible to the operator.
+- `onToolCall` now also fires for mutating-tool calls (the preview step).
 - `name` / `version` config options for the server identity reported on `initialize`.
-- `createMcpServer` now throws at construction on duplicate tool names, a tool named
-  `confirm_request` (reserved), a tool `scope` not declared in `scopes`, or a non-`z.object`
-  `inputSchema` — previously these failed per-request or silently.
+
+### Changed
+
+- **Breaking:** `createMcpServer` now throws at construction on duplicate tool names, a tool
+  named `confirm_request` (reserved), a tool `scope` not declared in `scopes`, or an
+  `inputSchema` that isn't a `z.object`. That includes object schemas wrapped in
+  `.transform()` / `.pipe()` / `.default()` / `.readonly()`, and — under zod 3 — `.refine()` /
+  `.superRefine()` / `.brand()`. Such tools previously started but were advertised with an
+  empty input schema and received unvalidated input; move that logic into the handler.
+- **Behavior:** the whole `z.object` (not just its `.shape`) is passed to the SDK, so zod 4
+  `.refine()` checks on an input schema now actually run (they were silently skipped).
+- **Behavior:** an error thrown by a mutating tool's `preview` or `execute` no longer reaches
+  the client verbatim — throw `ToolError` for messages meant for the client.
+- `@modelcontextprotocol/sdk` peer range raised from `^1` to `^1.25.0`, the first release
+  shipping the web-standard transport this kit imports.
+- Untyped `ToolDef` handler `input` is `unknown` under zod 3 too (was `any`).
+- Dependencies updated (vitest 5, hono 4.13, zod 4.6, SDK 1.30.1, eslint 10.11); `npm run
+typecheck` now also covers `test/` and `examples/`.
 
 ### Fixed
 
 - Replaying `confirm_request` with the same `idempotencyKey` returned the cached result
-  JSON-stringified inside a text block instead of the original result.
-- An error thrown by a mutating tool's `preview` or `execute` leaked its raw message to
-  the client; both now return the same generic error as read tools.
-
-### Changed
-
-- Dependencies updated (vitest 5, hono 4.13, zod 4.6, SDK 1.30.1, eslint 10.11); `npm run
-typecheck` now also covers `test/` and `examples/`.
+  JSON-stringified inside a text block instead of the original result; a corrupt cached
+  entry now yields a generic error instead of a parser message.
+- A mutating tool whose side effect succeeded could be reported as failed — and its
+  idempotency claim released, so a retry executed it twice — if its result couldn't be
+  serialized or `onMutation` threw. Both now keep the claim and return success.
+- An error thrown by a handler, `preview`, or `execute`, or a handler return value that
+  couldn't be serialized (BigInt, cycles), leaked its raw message to the client.
+- An object return value that merely has a `content` array (e.g. `{ id, content: [1, 2] }`)
+  was passed through as a malformed tool result; it's now JSON-serialized.
 
 ## [0.2.0] - 2026-07-28
 

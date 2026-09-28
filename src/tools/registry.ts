@@ -16,20 +16,21 @@
 //     two-phase.ts) — an ungranted mutating tool never reaches the preview phase that would
 //     create a token for confirm_request to act on.
 //
-// The Zod inputSchema → SDK shape conversion: `registerTool`'s `inputSchema` takes the Zod
-// object's `.shape` (a ZodRawShape), not the ZodObject itself.
+// The whole Zod object (not its `.shape`) goes to `registerTool`, so refinements on it run
+// during the SDK's input validation.
 //
-// Per-tool error sanitization: if a read tool handler throws, we catch it here and return a
-// generic isError result — the raw error message/stack is never forwarded to the client.
+// Per-tool error sanitization: if a read tool handler throws (or returns an unserializable
+// value), we return a generic isError result — or a ToolError's own message — and report the
+// real error to onToolError; the raw message/stack is never forwarded to the client.
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { isMutating, type ToolDef, type MutatingToolDef, type ToolContext } from "../config.js";
 import {
   registerMutatingTool,
   registerConfirmTool,
   toToolResult,
-  toolErrorResult,
+  toolFailure,
+  fireToolCall,
 } from "../two-phase.js";
-import { toShape } from "./shape.js";
 
 type AnyTool = ToolDef | MutatingToolDef;
 
@@ -51,23 +52,6 @@ function insufficientScopeResult(requiredScope: string) {
     ],
     isError: true,
   };
-}
-
-/**
- * Fire onToolCall (fire-and-forget — errors are swallowed so a misbehaving
- * hook never fails the tool request).
- */
-async function fireToolCall(ctx: ToolContext, toolName: string, input: unknown): Promise<void> {
-  try {
-    await ctx.hooks.onToolCall?.({
-      userId: ctx.userId,
-      toolName,
-      channel: "mcp",
-      input,
-    });
-  } catch {
-    // Intentionally swallowed — hook errors must not surface to the client.
-  }
 }
 
 /**
@@ -100,7 +84,6 @@ export function registerTools(
     }
 
     const readTool = tool as ToolDef;
-    const shape = toShape(tool.inputSchema);
 
     // Build the per-call handler. The SDK passes the parsed args object as the first
     // argument; we forward it to the tool's handler as-is.
@@ -109,16 +92,12 @@ export function registerTools(
         // tool.scope is guaranteed defined here — isGranted only returns false when it is.
         return insufficientScopeResult(tool.scope!);
       }
-      let result: unknown;
+      fireToolCall(ctx, tool.name, input);
       try {
-        result = await readTool.handler(input, ctx);
-      } catch {
-        // Fire hook even on error (best-effort).
-        void fireToolCall(ctx, tool.name, input);
-        return toolErrorResult();
+        return toToolResult(await readTool.handler(input, ctx));
+      } catch (e) {
+        return toolFailure(ctx, tool.name, "handler", e);
       }
-      void fireToolCall(ctx, tool.name, input);
-      return toToolResult(result);
     };
 
     // registerTool uses a config object — no overload ambiguity between an empty
@@ -127,7 +106,7 @@ export function registerTools(
       tool.name,
       {
         description: tool.description,
-        inputSchema: shape,
+        inputSchema: tool.inputSchema,
         annotations: tool.annotations,
       },
       cb,
@@ -150,11 +129,10 @@ export function registerTools(
  *  is identical whether or not the caller happens to have the scope — a caller stepping up
  *  from ungranted to granted must not see the tool's annotations change out from under it. */
 function registerUngrantedMutatingTool(server: McpServer, tool: MutatingToolDef): void {
-  const shape = toShape(tool.inputSchema);
   const annotations = { destructiveHint: true, ...(tool.annotations ?? {}) };
   server.registerTool(
     tool.name,
-    { description: tool.description, inputSchema: shape, annotations },
+    { description: tool.description, inputSchema: tool.inputSchema, annotations },
     async () => insufficientScopeResult(tool.scope!),
   );
 }
