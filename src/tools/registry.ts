@@ -23,13 +23,15 @@
 // generic isError result — the raw error message/stack is never forwarded to the client.
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { isMutating, type ToolDef, type MutatingToolDef, type ToolContext } from "../config.js";
-import { registerMutatingTool, registerConfirmTool } from "../two-phase.js";
+import {
+  registerMutatingTool,
+  registerConfirmTool,
+  toToolResult,
+  toolErrorResult,
+} from "../two-phase.js";
 import { toShape } from "./shape.js";
 
 type AnyTool = ToolDef | MutatingToolDef;
-
-/** Generic client-facing message when a tool handler throws. */
-const TOOL_ERROR_MESSAGE = "Tool execution failed. Please try again.";
 
 /** True when a scoped tool is permitted given the caller's granted scopes. */
 function isGranted(tool: AnyTool, grantedScopes: string[]): boolean {
@@ -113,13 +115,10 @@ export function registerTools(
       } catch {
         // Fire hook even on error (best-effort).
         void fireToolCall(ctx, tool.name, input);
-        return {
-          content: [{ type: "text" as const, text: TOOL_ERROR_MESSAGE }],
-          isError: true,
-        };
+        return toolErrorResult();
       }
       void fireToolCall(ctx, tool.name, input);
-      return result as { content: Array<{ type: "text"; text: string }> };
+      return toToolResult(result);
     };
 
     // registerTool uses a config object — no overload ambiguity between an empty

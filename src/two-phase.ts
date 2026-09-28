@@ -45,6 +45,27 @@ type ToolResult = {
   isError?: boolean;
 };
 
+/** Generic client-facing message when a tool handler throws — raw errors never reach the client. */
+const TOOL_ERROR_MESSAGE = "Tool execution failed. Please try again.";
+
+/** The sanitized isError result returned in place of a thrown handler error. */
+export const toolErrorResult = (): ToolResult => ({
+  content: [{ type: "text", text: TOOL_ERROR_MESSAGE }],
+  isError: true,
+});
+
+/**
+ * Normalize a handler's return value into an MCP CallToolResult: a string becomes one text
+ * block, an object with a `content` array passes through, anything else is JSON text.
+ */
+export function toToolResult(value: unknown): ToolResult {
+  if (typeof value === "string") return { content: [{ type: "text", text: value }] };
+  if (value !== null && typeof value === "object" && Array.isArray((value as ToolResult).content)) {
+    return value as ToolResult;
+  }
+  return { content: [{ type: "text", text: JSON.stringify(value) ?? "null" }] };
+}
+
 /** Wrap an arbitrary JSON-serialisable value as a single-text-block tool result. */
 function jsonResult(value: unknown, isError = false): ToolResult {
   return {
@@ -71,7 +92,12 @@ export function registerMutatingTool(
     tool.name,
     { description: tool.description, inputSchema: shape, annotations },
     async (input: unknown) => {
-      const preview = await tool.mutating.preview(input, ctx);
+      let preview: { summary: string; data: unknown };
+      try {
+        preview = await tool.mutating.preview(input, ctx);
+      } catch {
+        return toolErrorResult();
+      }
 
       const token = randomToken();
       const payload: ConfirmPayload = {
@@ -142,7 +168,7 @@ export function registerConfirmTool(
           });
         }
         // Cached result — replay without re-executing.
-        return { content: [{ type: "text", text: cached }] };
+        return JSON.parse(cached) as ToolResult;
       }
 
       // (b) Claim the key with the pending sentinel, then load + delete the confirm token
@@ -199,7 +225,7 @@ export function registerConfirmTool(
 
       // (c)/(d) Execute; on success cache the result and fire the (awaited) mutation hook.
       try {
-        const result = (await tool.mutating.execute(payload.data, ctx)) as ToolResult;
+        const result = toToolResult(await tool.mutating.execute(payload.data, ctx));
         const resultJson = JSON.stringify(result);
 
         await ctx.storage.put(idemKey, resultJson, {
@@ -213,10 +239,10 @@ export function registerConfirmTool(
         });
 
         return result;
-      } catch (e) {
+      } catch {
         // (e) Execution failed — release the claim so a legitimate retry can re-run.
         await ctx.storage.delete(idemKey);
-        throw e;
+        return toolErrorResult();
       }
     },
   );

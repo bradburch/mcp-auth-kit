@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { createMcpServer, createMemoryStorage } from "../../src/index.js";
+import { createMcpServer, createMemoryStorage, defineTool } from "../../src/index.js";
 
 export function createAppointmentsServer(baseUrl = "https://example.test") {
   return createMcpServer({
@@ -29,45 +29,22 @@ export function createAppointmentsServer(baseUrl = "https://example.test") {
       },
     },
     tools: [
-      {
+      defineTool({
         name: "list_slots",
         description: "List available appointment slots for today.",
         inputSchema: z.object({}),
-        handler: async () => ({
-          content: [
-            {
-              type: "text",
-              text: "Available slots: 09:00, 10:00, 11:00, 14:00, 15:00",
-            },
-          ],
-        }),
-      },
-      {
+        handler: async () => "Available slots: 09:00, 10:00, 11:00, 14:00, 15:00",
+      }),
+      defineTool({
         name: "book_slot",
         description: "Book an appointment slot.",
         scope: "write",
         inputSchema: z.object({ slot: z.string() }),
         mutating: {
-          preview: async (input) => {
-            const { slot } = input as { slot: string };
-            return {
-              summary: `book ${slot}`,
-              data: { slot },
-            };
-          },
-          execute: async (data) => {
-            const { slot } = data as { slot: string };
-            return {
-              content: [
-                {
-                  type: "text",
-                  text: `Successfully booked appointment at ${slot}.`,
-                },
-              ],
-            };
-          },
+          preview: async ({ slot }) => ({ summary: `book ${slot}`, data: { slot } }),
+          execute: async ({ slot }) => `Successfully booked appointment at ${slot}.`,
         },
-      },
+      }),
     ],
   });
 }

@@ -6,6 +6,29 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added
+
+- `defineTool(...)` — FastMCP-style typed tools: `input` is inferred from `inputSchema` and a
+  mutating tool's `execute(data)` is typed from `preview`'s `data`, so handlers need no casts.
+- Handlers and `execute` may return a plain string (→ one text block) or any JSON value
+  (→ JSON text block); an MCP `{ content: [...] }` result still passes through unchanged.
+- `name` / `version` config options for the server identity reported on `initialize`.
+- `createMcpServer` now throws at construction on duplicate tool names, a tool named
+  `confirm_request` (reserved), a tool `scope` not declared in `scopes`, or a non-`z.object`
+  `inputSchema` — previously these failed per-request or silently.
+
+### Fixed
+
+- Replaying `confirm_request` with the same `idempotencyKey` returned the cached result
+  JSON-stringified inside a text block instead of the original result.
+- An error thrown by a mutating tool's `preview` or `execute` leaked its raw message to
+  the client; both now return the same generic error as read tools.
+
+### Changed
+
+- Dependencies updated (vitest 5, hono 4.13, zod 4.6, SDK 1.30.1, eslint 10.11); `npm run
+typecheck` now also covers `test/` and `examples/`.
+
 ## [0.2.0] - 2026-07-28
 
 ### Added

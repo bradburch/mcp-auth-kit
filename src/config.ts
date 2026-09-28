@@ -84,30 +84,48 @@ export interface ToolContext {
   hooks: ObservabilityHooks;
 }
 
-/** A standard (read / non-mutating) tool definition. */
-export interface ToolDef {
+/** A standard (read / non-mutating) tool definition. Wrap in `defineTool` for typed `input`. */
+export interface ToolDef<S extends z.ZodTypeAny = z.ZodTypeAny> {
   name: string;
   description: string;
-  inputSchema: z.ZodTypeAny;
+  /** Must be a `z.object(...)` — the MCP tool input schema is always a JSON object. */
+  inputSchema: S;
   /** OAuth scope required to call this tool (omit = no scope check). */
   scope?: string;
   annotations?: Record<string, unknown>;
-  handler(input: unknown, ctx: ToolContext): Promise<unknown>;
+  /**
+   * Return a string (→ one text block), an MCP CallToolResult (`{ content: [...] }`, passed
+   * through), or any other JSON-serializable value (→ one JSON text block).
+   */
+  handler(input: z.infer<S>, ctx: ToolContext): Promise<unknown>;
 }
 
 /** A mutating tool definition using the two-phase preview → execute pattern. */
-export interface MutatingToolDef {
+export interface MutatingToolDef<S extends z.ZodTypeAny = z.ZodTypeAny, D = unknown> {
   name: string;
   description: string;
-  inputSchema: z.ZodTypeAny;
+  /** Must be a `z.object(...)` — the MCP tool input schema is always a JSON object. */
+  inputSchema: S;
   scope?: string;
   annotations?: Record<string, unknown>;
   mutating: {
     /** Phase 1: validate input and return a human-readable preview. */
-    preview(input: unknown, ctx: ToolContext): Promise<{ summary: string; data: unknown }>;
-    /** Phase 2: carry out the side effect using the preview data. */
-    execute(data: unknown, ctx: ToolContext): Promise<unknown>;
+    preview(input: z.infer<S>, ctx: ToolContext): Promise<{ summary: string; data: D }>;
+    /** Phase 2: carry out the side effect using the preview data. Returns like `handler`. */
+    execute(data: D, ctx: ToolContext): Promise<unknown>;
   };
+}
+
+/**
+ * Identity helper that infers `input` (from `inputSchema`) and mutating `data` (from
+ * `preview`'s return) so handlers need no casts. Same role as FastMCP's `addTool`.
+ */
+export function defineTool<S extends z.ZodTypeAny>(tool: ToolDef<S>): ToolDef<S>;
+export function defineTool<S extends z.ZodTypeAny, D>(
+  tool: MutatingToolDef<S, D>,
+): MutatingToolDef<S, D>;
+export function defineTool(tool: ToolDef | MutatingToolDef) {
+  return tool;
 }
 
 /** Type guard: true when `t` is a MutatingToolDef. */
@@ -132,6 +150,10 @@ export interface RateLimitConfig {
 export interface McpServerConfig {
   /** Public base URL of this server (used to build OAuth redirect URIs). */
   baseUrl: string;
+  /** Server name reported to MCP clients in `initialize`. Default: "mcp-oauth-kit". */
+  name?: string;
+  /** Server version reported to MCP clients in `initialize`. Default: the kit's version. */
+  version?: string;
   storage: KvLike;
   scopes: ScopeConfig[];
   identity?: IdentityConfig;
