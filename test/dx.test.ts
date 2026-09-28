@@ -457,3 +457,30 @@ describe("review fixes", () => {
     expect(await storage.get("mcp:idempotent:user-1:corrupt")).toBe("not json {");
   });
 });
+
+describe("hostile error objects", () => {
+  it("does not leak a Proxy trap's message from a read handler", async () => {
+    const app = createMcpServer({
+      ...base,
+      storage: createMemoryStorage(),
+      tools: [
+        defineTool({
+          name: "proxy",
+          description: "d",
+          inputSchema: z.object({}),
+          handler: async () => {
+            throw new Proxy(new Error("inner"), {
+              getPrototypeOf() {
+                throw new Error("trap-secret");
+              },
+            });
+          },
+        }),
+      ],
+    });
+    const token = await getToken(app);
+    const res = await callTool(app, token, "proxy", {});
+    expect(res).toMatchObject({ isError: true });
+    expect(JSON.stringify(res)).not.toContain("secret");
+  });
+});

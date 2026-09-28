@@ -166,7 +166,7 @@ All callbacks are fire-and-forget except `onMutation` (which is awaited). Errors
 
 Wrap each tool in `defineTool(...)` so `input` is typed from `inputSchema` (and a mutating tool's `execute` data from `preview`) — the FastMCP-style ergonomics. A handler may return a string (one text block), an MCP `{ content: [...] }` result (passed through), or any other JSON-serializable value (serialized as text). `createMcpServer` throws at startup on duplicate tool names, a tool named `confirm_request`, a `scope` missing from `scopes`, or an `inputSchema` that isn't a `z.object` — wrappers like `.transform()` (and `.refine()` under zod 3) are rejected because they'd advertise an empty schema; under zod 4, `.refine()` on the object is allowed and runs.
 
-**Errors.** A thrown error reaches the client as a generic "Tool execution failed" (and is reported to the `onToolError` hook). To reject with a reason the client should see, throw `ToolError` (only instances of the kit's class are forwarded — an unrelated error that merely has `name === "ToolError"` stays generic):
+**Errors.** A thrown error reaches the client as a generic "Tool execution failed" (and is reported to the `onToolError` hook). To reject with a reason the client should see, throw `ToolError` (instances of `ToolError`, or an `Error` carrying its `Symbol.for("mcp-oauth-kit.ToolError")` brand so duplicate package copies interoperate, are forwarded — an unrelated error that merely has `name === "ToolError"` stays generic):
 
 ```ts
 import { ToolError } from "mcp-oauth-kit";

@@ -60,10 +60,15 @@ const TOOL_ERROR_MESSAGE = "Tool execution failed. Please try again.";
  * is shared across copies) without trusting any unrelated error that happens to be named so.
  */
 function toolErrorResult(error?: unknown): ToolResult {
-  const isToolError =
-    error instanceof ToolError ||
-    (error instanceof Error &&
-      (error as unknown as Record<symbol, unknown>)[TOOL_ERROR_BRAND] === true);
+  let isToolError = false;
+  try {
+    isToolError =
+      error instanceof ToolError ||
+      (error instanceof Error &&
+        (error as unknown as Record<symbol, unknown>)[TOOL_ERROR_BRAND] === true);
+  } catch {
+    // A hostile error object (throwing Proxy trap / getter) is treated as foreign.
+  }
   const text = isToolError ? (error as Error).message : TOOL_ERROR_MESSAGE;
   return { content: [{ type: "text", text }], isError: true };
 }
