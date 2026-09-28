@@ -190,6 +190,8 @@ describe("config validation fails fast at construction", () => {
   });
 });
 
+const isZod4 = "_zod" in z.object({});
+
 describe("review fixes", () => {
   type ErrEvent = { userId: string; toolName: string; phase: string; error: unknown };
   const errors: ErrEvent[] = [];
@@ -229,12 +231,17 @@ describe("review fixes", () => {
           throw new ToolError("slot is full");
         },
       }),
-      defineTool({
-        name: "refined",
-        description: "zod refinement must run",
-        inputSchema: z.object({ a: z.string() }).refine((v) => v.a === "ok"),
-        handler: async ({ a }) => `got ${a}`,
-      }),
+      // zod 3's .refine() returns ZodEffects, which createMcpServer rejects by design.
+      ...(isZod4
+        ? [
+            defineTool({
+              name: "refined",
+              description: "zod refinement must run",
+              inputSchema: z.object({ a: z.string() }).refine((v) => v.a === "ok"),
+              handler: async ({ a }) => `got ${a}`,
+            }),
+          ]
+        : []),
       defineTool({
         name: "book_full",
         description: "preview rejects with a reason",
@@ -302,7 +309,7 @@ describe("review fixes", () => {
     expect(errors.at(-1)).toMatchObject({ toolName: "book_reject", phase: "execute" });
   });
 
-  it("runs zod refinements on the input schema", async () => {
+  it.skipIf(!isZod4)("runs zod refinements on the input schema", async () => {
     const token = await getToken(app);
     expect(text(await callTool(app, token, "refined", { a: "ok" }))).toBe("got ok");
     expect(await callTool(app, token, "refined", { a: "bad" })).toMatchObject({ isError: true });
@@ -319,6 +326,76 @@ describe("review fixes", () => {
     expect(executed).toBe(1);
   });
 
+  it("forwards a ToolError from a duplicate package copy (matched by name)", async () => {
+    class ForeignToolError extends Error {
+      override name = "ToolError";
+    }
+    const dup = createMcpServer({
+      ...base,
+      storage: createMemoryStorage(),
+      tools: [
+        defineTool({
+          name: "dup",
+          description: "d",
+          inputSchema: z.object({}),
+          handler: async () => {
+            throw new ForeignToolError("from another copy");
+          },
+        }),
+      ],
+    });
+    const token = await getToken(dup);
+    expect(text(await callTool(dup, token, "dup", {}))).toBe("from another copy");
+  });
+
+  it("returns the result when caching it fails after the side effect, without leaking", async () => {
+    const inner = createMemoryStorage();
+    let ran = 0;
+    const flaky = createMcpServer({
+      ...base,
+      storage: {
+        ...inner,
+        get: inner.get,
+        delete: inner.delete,
+        put: async (k, v, o) => {
+          if (k.startsWith("mcp:idempotent:") && !v.includes("__pending")) {
+            throw new Error("KV quota exceeded: internal-detail");
+          }
+          return inner.put(k, v, o);
+        },
+      },
+      hooks: {
+        onToolError: async (e) => {
+          errors.push(e);
+        },
+      },
+      tools: [
+        defineTool({
+          name: "pay",
+          description: "p",
+          inputSchema: z.object({}),
+          mutating: {
+            preview: async () => ({ summary: "p", data: null }),
+            execute: async () => {
+              ran++;
+              return "paid";
+            },
+          },
+        }),
+      ],
+    });
+    const token = await getToken(flaky);
+    const confirmationToken = await previewToken(flaky, token, "pay");
+    const res = await callTool(flaky, token, "confirm_request", {
+      confirmationToken,
+      idempotencyKey: "pay-1",
+    });
+    expect(text(res)).toBe("paid");
+    expect(ran).toBe(1);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(errors.at(-1)).toMatchObject({ toolName: "pay", phase: "execute" });
+  });
+
   it("returns a generic error when a cached idempotent result is corrupt", async () => {
     const token = await getToken(app);
     await storage.put("mcp:idempotent:user-1:corrupt", "not json {", { ttlSeconds: 60 });
@@ -328,5 +405,6 @@ describe("review fixes", () => {
     });
     expect(res).toMatchObject({ isError: true });
     expect(text(res)).not.toMatch(/JSON|not json/);
+    expect(await storage.get("mcp:idempotent:user-1:corrupt")).toBeNull();
   });
 });

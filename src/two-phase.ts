@@ -48,9 +48,14 @@ type ToolResult = {
 /** Generic client-facing message when a tool handler throws — raw errors never reach the client. */
 const TOOL_ERROR_MESSAGE = "Tool execution failed. Please try again.";
 
-/** isError result for a thrown error: a `ToolError`'s message verbatim, otherwise generic. */
+/**
+ * isError result for a thrown error: a `ToolError`'s message verbatim, otherwise generic. The
+ * `name` check also recognizes a ToolError from a duplicate copy of this package.
+ */
 function toolErrorResult(error?: unknown): ToolResult {
-  const text = error instanceof ToolError ? error.message : TOOL_ERROR_MESSAGE;
+  const isToolError =
+    error instanceof ToolError || (error instanceof Error && error.name === "ToolError");
+  const text = isToolError ? (error as Error).message : TOOL_ERROR_MESSAGE;
   return { content: [{ type: "text", text }], isError: true };
 }
 
@@ -65,6 +70,22 @@ export function toolFailure(
     .then(() => ctx.hooks.onToolError?.({ userId: ctx.userId, toolName, phase, error }))
     .catch(() => {});
   return toolErrorResult(error);
+}
+
+/** Wrap a tool callback so any unexpected throw (e.g. a storage error) is sanitized too. */
+function guarded(
+  ctx: ToolContext,
+  toolName: string,
+  phase: "preview" | "execute",
+  fn: (input: unknown) => Promise<ToolResult>,
+) {
+  return async (input: unknown): Promise<ToolResult> => {
+    try {
+      return await fn(input);
+    } catch (e) {
+      return toolFailure(ctx, toolName, phase, e);
+    }
+  };
 }
 
 /** Fire onToolCall (fire-and-forget — a misbehaving hook never fails the tool request). */
@@ -121,7 +142,7 @@ export function registerMutatingTool(
   server.registerTool(
     tool.name,
     { description: tool.description, inputSchema: tool.inputSchema, annotations },
-    async (input: unknown) => {
+    guarded(ctx, tool.name, "preview", async (input: unknown) => {
       fireToolCall(ctx, tool.name, input);
       let preview: { summary: string; data: unknown };
       try {
@@ -152,7 +173,7 @@ export function registerMutatingTool(
         content: [{ type: "text" as const, text: JSON.stringify(previewPayload) }],
         structuredContent: previewPayload,
       };
-    },
+    }),
   );
 }
 
@@ -184,7 +205,7 @@ export function registerConfirmTool(
       inputSchema: CONFIRM_INPUT.shape,
       annotations: { destructiveHint: true },
     },
-    async (input: unknown): Promise<ToolResult> => {
+    guarded(ctx, "confirm_request", "execute", async (input: unknown): Promise<ToolResult> => {
       const { confirmationToken, idempotencyKey: rawKey } = input as z.infer<typeof CONFIRM_INPUT>;
 
       const idemKey = idempotencyKey(ctx.userId, rawKey);
@@ -206,6 +227,7 @@ export function registerConfirmTool(
         } catch {
           // fall through
         }
+        await ctx.storage.delete(idemKey); // so a retry re-runs instead of hitting it again
         return toolErrorResult();
       }
 
@@ -281,9 +303,14 @@ export function registerConfirmTool(
         toolFailure(ctx, payload.toolName, "execute", e);
         result = jsonResult({ success: true });
       }
-      await ctx.storage.put(idemKey, JSON.stringify(result), {
-        ttlSeconds: IDEMPOTENCY_TTL_SECONDS,
-      });
+      try {
+        await ctx.storage.put(idemKey, JSON.stringify(result), {
+          ttlSeconds: IDEMPOTENCY_TTL_SECONDS,
+        });
+      } catch (e) {
+        // The client still gets its result, so it won't retry; the pending sentinel expires.
+        toolFailure(ctx, payload.toolName, "execute", e);
+      }
 
       try {
         await ctx.hooks.onMutation?.({
@@ -296,6 +323,6 @@ export function registerConfirmTool(
       }
 
       return result;
-    },
+    }),
   );
 }

@@ -44,7 +44,7 @@ export interface IdentityConfig {
 /** Optional async observability callbacks. */
 export interface ObservabilityHooks {
   /**
-   * Called after every tool invocation. Fire-and-forget — errors are swallowed
+   * Called when a tool is invoked (concurrently with the handler). Fire-and-forget — errors are swallowed
    * so a throwing hook never fails the request.
    */
   onToolCall?(event: {

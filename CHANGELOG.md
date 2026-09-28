@@ -29,6 +29,12 @@ All notable changes to this project are documented here. The format is based on
   empty input schema and received unvalidated input; move that logic into the handler.
 - **Behavior:** the whole `z.object` (not just its `.shape`) is passed to the SDK, so zod 4
   `.refine()` checks on an input schema now actually run (they were silently skipped).
+  This also makes `.strict()` objects reject unknown keys (JSON-RPC `-32602`; previously
+  stripped) and `.passthrough()` objects forward them to the handler (previously stripped),
+  and `tools/list` now reflects both via `additionalProperties` plus any object-level
+  `.describe()`. Plain `z.object` schemas are advertised exactly as before.
+- **Behavior:** `onToolCall` fires when a tool is invoked, concurrently with the handler
+  (previously after it returned).
 - **Behavior:** an error thrown by a mutating tool's `preview` or `execute` no longer reaches
   the client verbatim — throw `ToolError` for messages meant for the client.
 - `@modelcontextprotocol/sdk` peer range raised from `^1` to `^1.25.0`, the first release

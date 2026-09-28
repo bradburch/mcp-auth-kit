@@ -157,7 +157,7 @@ All callbacks are fire-and-forget except `onMutation` (which is awaited). Errors
 
 | Field         | Type                       | Description                                                                                                                                                                |
 | ------------- | -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `onToolCall`  | `(event) => Promise<void>` | Called after every tool invocation.                                                                                                                                        |
+| `onToolCall`  | `(event) => Promise<void>` | Called when a tool is invoked (including a mutating tool's preview call), concurrently with the handler. `event.input` is the same object the handler receives.            |
 | `onAudit`     | `(event) => Promise<void>` | Called on OAuth lifecycle events (`client_registered`, `token_issued`, `token_refreshed`, `token_revoked`).                                                                |
 | `onMutation`  | `(event) => Promise<void>` | Called (awaited) after a mutating tool's execute phase succeeds.                                                                                                           |
 | `onToolError` | `(event) => Promise<void>` | Called when a handler, `preview`, or `execute` throws or returns an unserializable value. `event.phase` says which; `event.error` is the real error the client never sees. |
