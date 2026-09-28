@@ -17,7 +17,7 @@ import { handleMcpRequest, jsonRpcError, JSON_RPC_ERROR } from "./transport.js";
 /** Default server identity reported to MCP clients (override via config.name / config.version). */
 const DEFAULT_SERVER_NAME = "mcp-oauth-kit";
 // Keep in sync with package.json's "version" — nothing enforces this automatically.
-const DEFAULT_SERVER_VERSION = "0.2.0";
+const DEFAULT_SERVER_VERSION = "0.3.0";
 
 /** JSON-RPC error for the GET/DELETE 405 responses (no SSE / sessions in stateless mode). */
 function methodNotAllowed(message: string): Response {

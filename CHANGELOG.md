@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-27
+
 ### Added
 
 - `defineTool(...)` — FastMCP-style typed tools: `input` is inferred from `inputSchema` and a
@@ -180,4 +182,5 @@ for production use.
   bundled `.d.ts` under `node16`/`nodenext`/`bundler` module resolution.
 - Added a `prepublishOnly` build hook so a publish can't ship a stale or empty `dist/`.
 
+[0.3.0]: https://github.com/bradburch/mcp-auth-kit/releases/tag/v0.3.0
 [0.1.0]: https://github.com/bradburch/mcp-auth-kit/releases/tag/v0.1.0
