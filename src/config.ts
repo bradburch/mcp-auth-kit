@@ -69,16 +69,24 @@ export interface ObservabilityHooks {
   onMutation?(event: { userId: string; toolName: string; summary: string }): Promise<void>;
   /**
    * Called when a tool handler, mutating `preview`, or mutating `execute` throws (or returns
-   * a value that can't be serialized). The client only sees a generic message (or a
-   * `ToolError`'s message), so this is where the real error surfaces. Fire-and-forget.
+   * a value that can't be serialized), or a storage call in the mutating flow fails. The
+   * client only sees a generic message (or a `ToolError`'s message), so this is where the
+   * real error surfaces. Fire-and-forget. `phase: "storage"` after `execute` means the side
+   * effect DID happen but its result couldn't be cached for idempotent replay.
    */
   onToolError?(event: {
     userId: string;
     toolName: string;
-    phase: "handler" | "preview" | "execute";
+    phase: ToolErrorPhase;
     error: unknown;
   }): Promise<void>;
 }
+
+/** Where a tool failure happened, as reported to `onToolError`. */
+export type ToolErrorPhase = "handler" | "preview" | "execute" | "storage";
+
+/** Global-registry brand, so a ToolError from a duplicate copy of this package still matches. */
+export const TOOL_ERROR_BRAND = Symbol.for("mcp-oauth-kit.ToolError");
 
 /**
  * Throw from a handler, `preview`, or `execute` to reject with a message the client sees
@@ -87,6 +95,7 @@ export interface ObservabilityHooks {
  */
 export class ToolError extends Error {
   override name = "ToolError";
+  readonly [TOOL_ERROR_BRAND] = true;
 }
 
 /** Handler input type. `unknown` (not zod 3's `any`) when the schema type isn't known. */

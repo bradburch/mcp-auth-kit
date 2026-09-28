@@ -15,7 +15,9 @@ All notable changes to this project are documented here. The format is based on
 - `ToolError` — throw it from a handler, `preview`, or `execute` to reject with a message the
   client sees verbatim (e.g. "09:00 is already booked"). Any other error stays generic.
 - `onToolError` hook, fired when a handler/`preview`/`execute` throws or returns an
-  unserializable value — the real error is no longer invisible to the operator.
+  unserializable value, or a storage call in the mutating flow fails (`phase: "storage"`) —
+  the real error is no longer invisible to the operator. A storage failure before
+  `execute` releases the idempotency claim so a retry can run.
 - `onToolCall` now also fires for mutating-tool calls (the preview step).
 - `name` / `version` config options for the server identity reported on `initialize`.
 

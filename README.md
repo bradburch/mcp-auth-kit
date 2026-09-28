@@ -155,18 +155,18 @@ createMcpServer({
 
 All callbacks are fire-and-forget except `onMutation` (which is awaited). Errors are swallowed so a throwing hook never fails the request.
 
-| Field         | Type                       | Description                                                                                                                                                                |
-| ------------- | -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `onToolCall`  | `(event) => Promise<void>` | Called when a tool is invoked (including a mutating tool's preview call), concurrently with the handler. `event.input` is the same object the handler receives.            |
-| `onAudit`     | `(event) => Promise<void>` | Called on OAuth lifecycle events (`client_registered`, `token_issued`, `token_refreshed`, `token_revoked`).                                                                |
-| `onMutation`  | `(event) => Promise<void>` | Called (awaited) after a mutating tool's execute phase succeeds.                                                                                                           |
-| `onToolError` | `(event) => Promise<void>` | Called when a handler, `preview`, or `execute` throws or returns an unserializable value. `event.phase` says which; `event.error` is the real error the client never sees. |
+| Field         | Type                       | Description                                                                                                                                                                                                                                                                                                                                             |
+| ------------- | -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `onToolCall`  | `(event) => Promise<void>` | Called when a tool is invoked (including a mutating tool's preview call), concurrently with the handler. `event.input` is the same object the handler receives.                                                                                                                                                                                         |
+| `onAudit`     | `(event) => Promise<void>` | Called on OAuth lifecycle events (`client_registered`, `token_issued`, `token_refreshed`, `token_revoked`).                                                                                                                                                                                                                                             |
+| `onMutation`  | `(event) => Promise<void>` | Called (awaited) after a mutating tool's execute phase succeeds.                                                                                                                                                                                                                                                                                        |
+| `onToolError` | `(event) => Promise<void>` | Called when a handler, `preview`, or `execute` throws or returns an unserializable value, or a storage call in the mutating flow fails. `event.phase` is `handler`/`preview`/`execute`/`storage`; `event.error` is the real error the client never sees. A `storage` event after `execute` means the side effect happened but its result wasn't cached. |
 
 ## Tool definitions
 
 Wrap each tool in `defineTool(...)` so `input` is typed from `inputSchema` (and a mutating tool's `execute` data from `preview`) — the FastMCP-style ergonomics. A handler may return a string (one text block), an MCP `{ content: [...] }` result (passed through), or any other JSON-serializable value (serialized as text). `createMcpServer` throws at startup on duplicate tool names, a tool named `confirm_request`, a `scope` missing from `scopes`, or an `inputSchema` that isn't a `z.object` — wrappers like `.transform()` (and `.refine()` under zod 3) are rejected because they'd advertise an empty schema; under zod 4, `.refine()` on the object is allowed and runs.
 
-**Errors.** A thrown error reaches the client as a generic "Tool execution failed" (and is reported to the `onToolError` hook). To reject with a reason the client should see, throw `ToolError`:
+**Errors.** A thrown error reaches the client as a generic "Tool execution failed" (and is reported to the `onToolError` hook). To reject with a reason the client should see, throw `ToolError` (only instances of the kit's class are forwarded — an unrelated error that merely has `name === "ToolError"` stays generic):
 
 ```ts
 import { ToolError } from "mcp-oauth-kit";

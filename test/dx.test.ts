@@ -326,8 +326,12 @@ describe("review fixes", () => {
     expect(executed).toBe(1);
   });
 
-  it("forwards a ToolError from a duplicate package copy (matched by name)", async () => {
+  it("forwards a ToolError from a duplicate package copy (shared brand), not a lookalike", async () => {
+    const brand = Symbol.for("mcp-oauth-kit.ToolError"); // what a duplicate copy would use
     class ForeignToolError extends Error {
+      readonly [brand] = true;
+    }
+    class LookalikeError extends Error {
       override name = "ToolError";
     }
     const dup = createMcpServer({
@@ -342,10 +346,19 @@ describe("review fixes", () => {
             throw new ForeignToolError("from another copy");
           },
         }),
+        defineTool({
+          name: "lookalike",
+          description: "d",
+          inputSchema: z.object({}),
+          handler: async () => {
+            throw new LookalikeError("password=hunter2");
+          },
+        }),
       ],
     });
     const token = await getToken(dup);
     expect(text(await callTool(dup, token, "dup", {}))).toBe("from another copy");
+    expect(text(await callTool(dup, token, "lookalike", {}))).not.toContain("hunter2");
   });
 
   it("returns the result when caching it fails after the side effect, without leaking", async () => {
@@ -393,7 +406,42 @@ describe("review fixes", () => {
     expect(text(res)).toBe("paid");
     expect(ran).toBe(1);
     await new Promise((r) => setTimeout(r, 0));
-    expect(errors.at(-1)).toMatchObject({ toolName: "pay", phase: "execute" });
+    expect(errors.at(-1)).toMatchObject({ toolName: "pay", phase: "storage" });
+  });
+
+  it("releases the claim when storage fails before execute runs", async () => {
+    const inner = createMemoryStorage();
+    let failConfirmGet = true;
+    const app2 = createMcpServer({
+      ...base,
+      storage: {
+        put: inner.put,
+        delete: inner.delete,
+        get: async (k) => {
+          if (k.startsWith("mcp:confirm:") && failConfirmGet) throw new Error("KV down");
+          return inner.get(k);
+        },
+      },
+      tools: [
+        defineTool({
+          name: "pay",
+          description: "p",
+          inputSchema: z.object({}),
+          mutating: {
+            preview: async () => ({ summary: "p", data: null }),
+            execute: async () => "paid",
+          },
+        }),
+      ],
+    });
+    const token = await getToken(app2);
+    const confirmationToken = await previewToken(app2, token, "pay");
+    const args = { confirmationToken, idempotencyKey: "retry-me" };
+    const first = await callTool(app2, token, "confirm_request", args);
+    expect(first).toMatchObject({ isError: true });
+    expect(text(first)).not.toContain("KV down");
+    failConfirmGet = false;
+    expect(text(await callTool(app2, token, "confirm_request", args))).toBe("paid");
   });
 
   it("returns a generic error when a cached idempotent result is corrupt", async () => {
@@ -405,6 +453,7 @@ describe("review fixes", () => {
     });
     expect(res).toMatchObject({ isError: true });
     expect(text(res)).not.toMatch(/JSON|not json/);
-    expect(await storage.get("mcp:idempotent:user-1:corrupt")).toBeNull();
+    // Left for the TTL — deleting without CAS could wipe a concurrent request's claim.
+    expect(await storage.get("mcp:idempotent:user-1:corrupt")).toBe("not json {");
   });
 });

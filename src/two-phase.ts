@@ -16,7 +16,13 @@
 // (e.g. a Durable Object). On execute failure the key is deleted so a legitimate retry re-runs.
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { ToolError, type MutatingToolDef, type ToolContext } from "./config.js";
+import {
+  ToolError,
+  TOOL_ERROR_BRAND,
+  type MutatingToolDef,
+  type ToolContext,
+  type ToolErrorPhase,
+} from "./config.js";
 import { confirmKey, idempotencyKey } from "./storage/keys.js";
 import { randomToken } from "./crypto.js";
 
@@ -50,11 +56,14 @@ const TOOL_ERROR_MESSAGE = "Tool execution failed. Please try again.";
 
 /**
  * isError result for a thrown error: a `ToolError`'s message verbatim, otherwise generic. The
- * `name` check also recognizes a ToolError from a duplicate copy of this package.
+ * brand check also recognizes a ToolError from a duplicate copy of this package (`Symbol.for`
+ * is shared across copies) without trusting any unrelated error that happens to be named so.
  */
 function toolErrorResult(error?: unknown): ToolResult {
   const isToolError =
-    error instanceof ToolError || (error instanceof Error && error.name === "ToolError");
+    error instanceof ToolError ||
+    (error instanceof Error &&
+      (error as unknown as Record<symbol, unknown>)[TOOL_ERROR_BRAND] === true);
   const text = isToolError ? (error as Error).message : TOOL_ERROR_MESSAGE;
   return { content: [{ type: "text", text }], isError: true };
 }
@@ -63,7 +72,7 @@ function toolErrorResult(error?: unknown): ToolResult {
 export function toolFailure(
   ctx: ToolContext,
   toolName: string,
-  phase: "handler" | "preview" | "execute",
+  phase: ToolErrorPhase,
   error: unknown,
 ): ToolResult {
   void Promise.resolve()
@@ -72,18 +81,16 @@ export function toolFailure(
   return toolErrorResult(error);
 }
 
-/** Wrap a tool callback so any unexpected throw (e.g. a storage error) is sanitized too. */
-function guarded(
-  ctx: ToolContext,
-  toolName: string,
-  phase: "preview" | "execute",
-  fn: (input: unknown) => Promise<ToolResult>,
-) {
+/**
+ * Wrap a tool callback so any throw that escapes it — in practice a storage error, since
+ * preview/execute failures are handled inline — is sanitized and reported as "storage".
+ */
+function guarded(ctx: ToolContext, toolName: string, fn: (input: unknown) => Promise<ToolResult>) {
   return async (input: unknown): Promise<ToolResult> => {
     try {
       return await fn(input);
     } catch (e) {
-      return toolFailure(ctx, toolName, phase, e);
+      return toolFailure(ctx, toolName, "storage", e);
     }
   };
 }
@@ -142,7 +149,7 @@ export function registerMutatingTool(
   server.registerTool(
     tool.name,
     { description: tool.description, inputSchema: tool.inputSchema, annotations },
-    guarded(ctx, tool.name, "preview", async (input: unknown) => {
+    guarded(ctx, tool.name, async (input: unknown) => {
       fireToolCall(ctx, tool.name, input);
       let preview: { summary: string; data: unknown };
       try {
@@ -205,7 +212,7 @@ export function registerConfirmTool(
       inputSchema: CONFIRM_INPUT.shape,
       annotations: { destructiveHint: true },
     },
-    guarded(ctx, "confirm_request", "execute", async (input: unknown): Promise<ToolResult> => {
+    guarded(ctx, "confirm_request", async (input: unknown): Promise<ToolResult> => {
       const { confirmationToken, idempotencyKey: rawKey } = input as z.infer<typeof CONFIRM_INPUT>;
 
       const idemKey = idempotencyKey(ctx.userId, rawKey);
@@ -227,7 +234,9 @@ export function registerConfirmTool(
         } catch {
           // fall through
         }
-        await ctx.storage.delete(idemKey); // so a retry re-runs instead of hitting it again
+        // Deliberately NOT deleted: with no compare-and-swap a delete could wipe a concurrent
+        // request's fresh claim/result. A corrupt entry only comes from a broken store; the
+        // 10-minute TTL clears it.
         return toolErrorResult();
       }
 
@@ -237,50 +246,58 @@ export function registerConfirmTool(
         ttlSeconds: IDEMPOTENCY_TTL_SECONDS,
       });
 
-      const cKey = confirmKey(confirmationToken);
-      const rawPayload = await ctx.storage.get(cKey);
-      if (rawPayload === null) {
-        // Expired / invalid / already used — release the claim so a fresh confirm can run.
-        await ctx.storage.delete(idemKey);
-        return jsonResult({
-          success: false,
-          error: "This confirmation has expired or was already used.",
-        });
-      }
-
+      // Anything that throws between the claim and execute (a storage error) releases the
+      // claim — nothing ran yet — then propagates to `guarded` for sanitizing.
+      let tool: MutatingToolDef | undefined;
       let payload: ConfirmPayload;
       try {
-        payload = JSON.parse(rawPayload) as ConfirmPayload;
-      } catch {
-        await ctx.storage.delete(idemKey);
-        return jsonResult({
-          success: false,
-          error: "Invalid confirmation payload.",
-        });
-      }
+        const cKey = confirmKey(confirmationToken);
+        const rawPayload = await ctx.storage.get(cKey);
+        if (rawPayload === null) {
+          // Expired / invalid / already used — release the claim so a fresh confirm can run.
+          await ctx.storage.delete(idemKey);
+          return jsonResult({
+            success: false,
+            error: "This confirmation has expired or was already used.",
+          });
+        }
 
-      // Bind the confirmation to the user who previewed it — a leaked token must not let
-      // another user execute someone else's previewed mutation. Check ownership BEFORE
-      // consuming the single-use token so a wrong-user attempt can't burn the rightful
-      // user's token (denial of service).
-      if (payload.userId !== ctx.userId) {
-        await ctx.storage.delete(idemKey);
-        return jsonResult({
-          success: false,
-          error: "This confirmation has expired or was already used.",
-        });
-      }
+        try {
+          payload = JSON.parse(rawPayload) as ConfirmPayload;
+        } catch {
+          await ctx.storage.delete(idemKey);
+          return jsonResult({
+            success: false,
+            error: "Invalid confirmation payload.",
+          });
+        }
 
-      // Ownership confirmed — consume the token (single-use) before executing.
-      await ctx.storage.delete(cKey);
+        // Bind the confirmation to the user who previewed it — a leaked token must not let
+        // another user execute someone else's previewed mutation. Check ownership BEFORE
+        // consuming the single-use token so a wrong-user attempt can't burn the rightful
+        // user's token (denial of service).
+        if (payload.userId !== ctx.userId) {
+          await ctx.storage.delete(idemKey);
+          return jsonResult({
+            success: false,
+            error: "This confirmation has expired or was already used.",
+          });
+        }
 
-      const tool = byName.get(payload.toolName);
-      if (!tool) {
-        await ctx.storage.delete(idemKey);
-        return jsonResult({
-          success: false,
-          error: `Unknown mutating tool: ${payload.toolName}`,
-        });
+        // Ownership confirmed — consume the token (single-use) before executing.
+        await ctx.storage.delete(cKey);
+
+        tool = byName.get(payload.toolName);
+        if (!tool) {
+          await ctx.storage.delete(idemKey);
+          return jsonResult({
+            success: false,
+            error: `Unknown mutating tool: ${payload.toolName}`,
+          });
+        }
+      } catch (e) {
+        await ctx.storage.delete(idemKey).catch(() => {});
+        throw e;
       }
 
       // (c) Execute. Only a throw from execute itself counts as failure: release the claim so
@@ -309,7 +326,7 @@ export function registerConfirmTool(
         });
       } catch (e) {
         // The client still gets its result, so it won't retry; the pending sentinel expires.
-        toolFailure(ctx, payload.toolName, "execute", e);
+        toolFailure(ctx, payload.toolName, "storage", e);
       }
 
       try {

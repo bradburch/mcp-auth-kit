@@ -31,6 +31,7 @@ export type {
   ToolDef,
   MutatingToolDef,
   RateLimitConfig,
+  ToolErrorPhase,
 } from "./config.js";
 
 // ─── Advanced / low-level API ─────────────────────────────────────────────────
