@@ -2,7 +2,7 @@
 //
 // A mutating tool never executes its side effect on its own call. Instead:
 //   1. Calling the tool runs `preview(input, ctx)`, stores the preview under a single-use
-//      `confirmKey(token)` in storage (5-min TTL), and returns the summary + a
+//      `confirmKey(sha256(token))` in storage (5-min TTL), and returns the summary + a
 //      `confirmationToken`. No side effect happens.
 //   2. The caller invokes the ONE shared `confirm_request` tool with that token plus an
 //      `idempotencyKey`. confirm_request loads+deletes the token, runs `execute(data, ctx)`,
@@ -11,7 +11,9 @@
 // Idempotency: KV has no compare-and-swap, so we
 // claim the idempotency key with a pending sentinel before executing. A concurrent/retried
 // confirm that sees a cached RESULT returns it (no re-exec); one that sees the pending
-// sentinel backs off and asks the caller to retry. This NARROWS — but does not fully close —
+// sentinel backs off and asks the caller to retry. Both are bound to the confirmation token
+// they were claimed for: the same key arriving with a DIFFERENT token is a client bug (a
+// reused key) and gets a conflict error — never another payment's cached result. This NARROWS — but does not fully close —
 // the double-execute window; true exactly-once would require a strongly-consistent store
 // (e.g. a Durable Object). On execute failure the key is deleted so a legitimate retry re-runs.
 import { requireScopes, type McpServer } from "@modelcontextprotocol/server";
@@ -20,11 +22,13 @@ import {
   ToolError,
   TOOL_ERROR_BRAND,
   type MutatingToolDef,
+  type PreviewResult,
   type ToolContext,
   type ToolErrorPhase,
 } from "./config.js";
 import { confirmKey, idempotencyKey } from "./storage/keys.js";
-import { randomToken } from "./crypto.js";
+import { randomToken, sha256Hex } from "./crypto.js";
+import { fireAndForget } from "./http/wait-until.js";
 
 /** Confirmation-token TTL — a previewed mutation expires after 5 minutes. */
 const CONFIRM_TTL_SECONDS = 300;
@@ -32,10 +36,14 @@ const CONFIRM_TTL_SECONDS = 300;
 /** Idempotency-key TTL — cached confirm results / pending sentinel expire after 10 minutes. */
 const IDEMPOTENCY_TTL_SECONDS = 600;
 
-/** Sentinel written to the idempotency key while a confirm is executing. */
-const PENDING_SENTINEL = JSON.stringify({ __pending: true });
+/**
+ * Stored under the idempotency key: a pending claim while a confirm executes, then the
+ * cached result. `tokenHash` binds the record to the confirmation it was claimed for.
+ */
+type IdempotencyRecord =
+  { tokenHash: string; pending: true } | { tokenHash: string; result: ToolResult };
 
-/** Stored preview payload, keyed by `confirmKey(token)`. */
+/** Stored preview payload, keyed by `confirmKey(sha256(token))`. */
 interface ConfirmPayload {
   toolName: string;
   summary: string;
@@ -55,21 +63,26 @@ type ToolResult = {
 const TOOL_ERROR_MESSAGE = "Tool execution failed. Please try again.";
 
 /**
- * isError result for a thrown error: a `ToolError`'s message verbatim, otherwise generic. The
- * brand check also recognizes a ToolError from a duplicate copy of this package (`Symbol.for`
- * is shared across copies) without trusting any unrelated error that happens to be named so.
+ * True for a `ToolError`. The brand check also recognizes a ToolError from a duplicate copy
+ * of this package (`Symbol.for` is shared across copies) without trusting any unrelated
+ * error that happens to be named so.
  */
-function toolErrorResult(error?: unknown): ToolResult {
-  let isToolError = false;
+function isToolError(error: unknown): boolean {
   try {
-    isToolError =
+    return (
       error instanceof ToolError ||
       (error instanceof Error &&
-        (error as unknown as Record<symbol, unknown>)[TOOL_ERROR_BRAND] === true);
+        (error as unknown as Record<symbol, unknown>)[TOOL_ERROR_BRAND] === true)
+    );
   } catch {
     // A hostile error object (throwing Proxy trap / getter) is treated as foreign.
+    return false;
   }
-  const text = isToolError ? (error as Error).message : TOOL_ERROR_MESSAGE;
+}
+
+/** isError result for a thrown error: a `ToolError`'s message verbatim, otherwise generic. */
+function toolErrorResult(error?: unknown): ToolResult {
+  const text = isToolError(error) ? (error as Error).message : TOOL_ERROR_MESSAGE;
   return { content: [{ type: "text", text }], isError: true };
 }
 
@@ -80,9 +93,11 @@ export function toolFailure(
   phase: ToolErrorPhase,
   error: unknown,
 ): ToolResult {
-  void Promise.resolve()
-    .then(() => ctx.hooks.onToolError?.({ userId: ctx.userId, toolName, phase, error }))
-    .catch(() => {});
+  const expected = isToolError(error);
+  fireAndForget(
+    () => ctx.hooks.onToolError?.({ userId: ctx.userId, toolName, phase, error, expected }),
+    ctx.waitUntil,
+  );
   return toolErrorResult(error);
 }
 
@@ -107,9 +122,10 @@ export function scopeChallengeFor(tool: { scope?: string }) {
 
 /** Fire onToolCall (fire-and-forget — a misbehaving hook never fails the tool request). */
 export function fireToolCall(ctx: ToolContext, toolName: string, input: unknown): void {
-  void Promise.resolve()
-    .then(() => ctx.hooks.onToolCall?.({ userId: ctx.userId, toolName, channel: "mcp", input }))
-    .catch(() => {});
+  fireAndForget(
+    () => ctx.hooks.onToolCall?.({ userId: ctx.userId, toolName, channel: "mcp", input }),
+    ctx.waitUntil,
+  );
 }
 
 /** True when `value` looks like an MCP CallToolResult (every content item has a string type). */
@@ -141,6 +157,11 @@ function jsonResult(value: unknown, isError = false): ToolResult {
     content: [{ type: "text", text: JSON.stringify(value) }],
     isError,
   };
+}
+
+/** A confirm that did not execute: `{ success: false, error }` text, flagged `isError`. */
+function confirmRefused(error: string): ToolResult {
+  return jsonResult({ success: false, error }, true);
 }
 
 /**
@@ -180,12 +201,12 @@ export function registerMutatingTool(
         data: preview.data,
         userId: ctx.userId,
       };
-      await ctx.storage.put(confirmKey(token), JSON.stringify(payload), {
+      await ctx.storage.put(confirmKey(await sha256Hex(token)), JSON.stringify(payload), {
         ttlSeconds: CONFIRM_TTL_SECONDS,
       });
 
-      const previewPayload = {
-        status: "preview" as const,
+      const previewPayload: PreviewResult = {
+        status: "preview",
         summary: preview.summary,
         confirmationToken: token,
       };
@@ -193,7 +214,7 @@ export function registerMutatingTool(
       // structuredContent so they surface unescaped at the result's top level.
       return {
         content: [{ type: "text" as const, text: JSON.stringify(previewPayload) }],
-        structuredContent: previewPayload,
+        structuredContent: { ...previewPayload },
       };
     }),
   );
@@ -231,33 +252,39 @@ export function registerConfirmTool(
       const { confirmationToken, idempotencyKey: rawKey } = input as z.infer<typeof CONFIRM_INPUT>;
 
       const idemKey = idempotencyKey(ctx.userId, rawKey);
+      const tokenHash = await sha256Hex(confirmationToken);
 
-      // (a) Idempotency check — return a cached RESULT, or back off on a pending sentinel.
+      // (a) Idempotency check — return a cached RESULT, or back off on a pending claim.
       const cached = await ctx.storage.get(idemKey);
       if (cached !== null) {
-        if (cached === PENDING_SENTINEL) {
-          return jsonResult({
-            success: false,
-            error: "This request is already being processed — please retry in a moment.",
-          });
-        }
-        // Cached result — replay without re-executing. A corrupt entry gets a generic error
-        // (a JSON.parse message would echo the stored string back to the client).
+        // A corrupt entry gets a generic error (a JSON.parse message would echo the stored
+        // string back). Deliberately NOT deleted: with no compare-and-swap a delete could wipe
+        // a concurrent request's fresh claim/result; the 10-minute TTL clears it.
+        let record: IdempotencyRecord;
         try {
-          const replay: unknown = JSON.parse(cached);
-          if (isCallToolResult(replay)) return replay;
+          record = JSON.parse(cached) as IdempotencyRecord;
         } catch {
-          // fall through
+          return toolErrorResult();
         }
-        // Deliberately NOT deleted: with no compare-and-swap a delete could wipe a concurrent
-        // request's fresh claim/result. A corrupt entry only comes from a broken store; the
-        // 10-minute TTL clears it.
+        if (record?.tokenHash !== tokenHash) {
+          if (typeof record?.tokenHash !== "string") return toolErrorResult();
+          return confirmRefused(
+            "This idempotencyKey was already used for a different confirmation — use a new key per confirmation.",
+          );
+        }
+        if ("pending" in record) {
+          return confirmRefused(
+            "This request is already being processed — please retry in a moment.",
+          );
+        }
+        if (isCallToolResult(record.result)) return record.result;
         return toolErrorResult();
       }
 
-      // (b) Claim the key with the pending sentinel, then load + delete the confirm token
+      // (b) Claim the key with a pending record, then load + delete the confirm token
       //     (single-use) so a concurrent retry can't reuse it.
-      await ctx.storage.put(idemKey, PENDING_SENTINEL, {
+      const pending: IdempotencyRecord = { tokenHash, pending: true };
+      await ctx.storage.put(idemKey, JSON.stringify(pending), {
         ttlSeconds: IDEMPOTENCY_TTL_SECONDS,
       });
 
@@ -265,26 +292,21 @@ export function registerConfirmTool(
       // claim — nothing ran yet — then propagates to `guarded` for sanitizing.
       let tool: MutatingToolDef | undefined;
       let payload: ConfirmPayload;
+      let rawPayload: string | null;
+      const cKey = confirmKey(tokenHash);
       try {
-        const cKey = confirmKey(confirmationToken);
-        const rawPayload = await ctx.storage.get(cKey);
+        rawPayload = await ctx.storage.get(cKey);
         if (rawPayload === null) {
           // Expired / invalid / already used — release the claim so a fresh confirm can run.
           await ctx.storage.delete(idemKey);
-          return jsonResult({
-            success: false,
-            error: "This confirmation has expired or was already used.",
-          });
+          return confirmRefused("This confirmation has expired or was already used.");
         }
 
         try {
           payload = JSON.parse(rawPayload) as ConfirmPayload;
         } catch {
           await ctx.storage.delete(idemKey);
-          return jsonResult({
-            success: false,
-            error: "Invalid confirmation payload.",
-          });
+          return confirmRefused("Invalid confirmation payload.");
         }
 
         // Bind the confirmation to the user who previewed it — a leaked token must not let
@@ -293,10 +315,7 @@ export function registerConfirmTool(
         // user's token (denial of service).
         if (payload.userId !== ctx.userId) {
           await ctx.storage.delete(idemKey);
-          return jsonResult({
-            success: false,
-            error: "This confirmation has expired or was already used.",
-          });
+          return confirmRefused("This confirmation has expired or was already used.");
         }
 
         // Ownership confirmed — consume the token (single-use) before executing.
@@ -305,22 +324,23 @@ export function registerConfirmTool(
         tool = byName.get(payload.toolName);
         if (!tool) {
           await ctx.storage.delete(idemKey);
-          return jsonResult({
-            success: false,
-            error: `Unknown mutating tool: ${payload.toolName}`,
-          });
+          return confirmRefused(`Unknown mutating tool: ${payload.toolName}`);
         }
       } catch (e) {
         await ctx.storage.delete(idemKey).catch(() => {});
         throw e;
       }
 
-      // (c) Execute. Only a throw from execute itself counts as failure: release the claim so
-      //     a legitimate retry can re-run.
+      // (c) Execute. Only a throw from execute itself counts as failure: restore the consumed
+      //     token and release the claim so a legitimate retry (same token + key) can re-run.
+      //     ponytail: the restored token gets a fresh 5-minute TTL rather than its remainder.
       let raw: unknown;
       try {
         raw = await tool.mutating.execute(payload.data, ctx);
       } catch (e) {
+        await ctx.storage
+          .put(cKey, rawPayload, { ttlSeconds: CONFIRM_TTL_SECONDS })
+          .catch(() => {});
         await ctx.storage.delete(idemKey);
         return toolFailure(ctx, payload.toolName, "execute", e);
       }
@@ -336,7 +356,8 @@ export function registerConfirmTool(
         result = jsonResult({ success: true });
       }
       try {
-        await ctx.storage.put(idemKey, JSON.stringify(result), {
+        const done: IdempotencyRecord = { tokenHash, result };
+        await ctx.storage.put(idemKey, JSON.stringify(done), {
           ttlSeconds: IDEMPOTENCY_TTL_SECONDS,
         });
       } catch (e) {
@@ -349,6 +370,9 @@ export function registerConfirmTool(
           userId: ctx.userId,
           toolName: payload.toolName,
           summary: payload.summary,
+          data: payload.data,
+          result,
+          idempotencyKey: rawKey,
         });
       } catch {
         // Swallowed like every hook — the mutation already succeeded.

@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type { KvLike } from "./storage/types.js";
+import type { TokenTtlConfig } from "./oauth/provider.js";
 
 /** A single OAuth scope the server advertises. */
 export interface ScopeConfig {
@@ -36,9 +37,16 @@ export interface IdentityConfig {
   branding?: Branding;
   /**
    * Validate submitted field values. Return a stable userId string on
-   * success, or null to reject the credentials.
+   * success, or null to reject the credentials. Every field value is a string (missing
+   * fields arrive as `""`); non-password fields are trimmed.
+   *
+   * `context` carries the raw request and the trusted client IP (from `ipExtractor`). The
+   * kit only rate-limits per IP — use these to add per-account lockout for short codes.
    */
-  verify(fields: Record<string, string>): Promise<string | null>;
+  verify(
+    fields: Record<string, string>,
+    context: { request: Request; ip: string },
+  ): Promise<string | null>;
 }
 
 /** Optional async observability callbacks. */
@@ -64,9 +72,21 @@ export interface ObservabilityHooks {
   }): Promise<void>;
   /**
    * Called after a mutating tool's execute phase succeeds. Awaited by the
-   * confirm flow (durable side-effect, e.g. an audit-ledger write).
+   * confirm flow (durable side-effect, e.g. an audit-ledger write). Not called for an
+   * idempotent replay — only when `execute` actually ran.
    */
-  onMutation?(event: { userId: string; toolName: string; summary: string }): Promise<void>;
+  onMutation?(event: {
+    userId: string;
+    toolName: string;
+    /** The preview's summary — the same text the client saw before confirming. */
+    summary: string;
+    /** The preview's `data`, as passed to `execute` (after a JSON round-trip). */
+    data: unknown;
+    /** The tool result returned to the client. */
+    result: unknown;
+    /** The client's idempotency key for this confirmation. */
+    idempotencyKey: string;
+  }): Promise<void>;
   /**
    * Called when a tool handler, mutating `preview`, or mutating `execute` throws (or returns
    * a value that can't be serialized), or a storage call in the mutating flow fails. The
@@ -79,6 +99,12 @@ export interface ObservabilityHooks {
     toolName: string;
     phase: ToolErrorPhase;
     error: unknown;
+    /**
+     * True when `error` is a `ToolError` — a deliberate rejection (e.g. "insufficient
+     * funds") whose message the client saw, not a failure. Filter on it to keep business
+     * rejections out of error alerting.
+     */
+    expected: boolean;
   }): Promise<void>;
 }
 
@@ -98,6 +124,16 @@ export class ToolError extends Error {
   readonly [TOOL_ERROR_BRAND] = true;
 }
 
+/**
+ * What calling a mutating tool returns (as `structuredContent`, and as JSON text): pass
+ * `confirmationToken` to `confirm_request` with a fresh `idempotencyKey` to execute it.
+ */
+export interface PreviewResult {
+  status: "preview";
+  summary: string;
+  confirmationToken: string;
+}
+
 /** Handler input type. `unknown` (not zod 3's `any`) when the schema type isn't known. */
 type Input<S extends z.ZodTypeAny> = unknown extends z.infer<S> ? unknown : z.infer<S>;
 
@@ -114,6 +150,11 @@ export interface ToolContext {
    */
   env: unknown;
   hooks: ObservabilityHooks;
+  /**
+   * The runtime's `waitUntil` on Cloudflare Workers / edge runtimes (undefined on Node): hand
+   * it a promise to keep background work alive after the response is sent.
+   */
+  waitUntil?: (promise: Promise<unknown>) => void;
 }
 
 /** A standard (read / non-mutating) tool definition. Wrap in `defineTool` for typed `input`. */
@@ -147,9 +188,18 @@ export interface MutatingToolDef<S extends z.ZodTypeAny = z.ZodTypeAny, D = unkn
   scope?: string;
   annotations?: Record<string, unknown>;
   mutating: {
-    /** Phase 1: validate input and return a human-readable preview. */
+    /**
+     * Phase 1: validate input and return a human-readable preview. `summary` is shown to the
+     * client before it confirms and is passed to `onMutation` after — phrase it so it reads
+     * either way ("Send $25 to bob"). `data` is stored as JSON: it must be JSON-serializable
+     * (no Date/Map/BigInt).
+     */
     preview(input: Input<S>, ctx: ToolContext): Promise<{ summary: string; data: D }>;
-    /** Phase 2: carry out the side effect using the preview data. Returns like `handler`. */
+    /**
+     * Phase 2: carry out the side effect using the preview data. Returns like `handler`.
+     * Runs up to 5 minutes after `preview` — re-check anything that may have changed since
+     * (balances, availability) rather than trusting the preview's checks.
+     */
     execute(data: D, ctx: ToolContext): Promise<unknown>;
   };
 }
@@ -176,7 +226,11 @@ export function isMutating(t: ToolDef | MutatingToolDef): t is MutatingToolDef {
  * All limits are per-hour. Omit a field to use the default.
  */
 export interface RateLimitConfig {
-  /** Max MCP tool calls per user per hour. Default: 50. */
+  /**
+   * Max authenticated `POST /mcp` requests per user per hour — every request counts
+   * (`tools/list`, `server/discover`, and calls refused for scope), not just tool calls.
+   * Default: 50.
+   */
   userPerHour?: number;
   /** Max OAuth authorize attempts per IP per hour (brute-force guard). Default: 10. */
   ipAuthorizePerHour?: number;
@@ -202,8 +256,12 @@ export interface McpServerConfig {
    * Override how the trusted client IP is extracted for per-IP rate limiting.
    * Defaults to CF-Connecting-IP → first hop of X-Forwarded-For. Set this when NOT
    * deployed behind Cloudflare so an attacker can't spoof a header to reset buckets.
+   * `env` is the Hono `c.env`; on `@hono/node-server` the peer address is
+   * `(env as HttpBindings).incoming.socket.remoteAddress`.
    */
-  ipExtractor?: (req: Request) => string;
+  ipExtractor?: (req: Request, env: unknown) => string;
+  /** Override access/refresh token lifetimes (defaults: 1 hour / 90 days). */
+  tokenTtl?: TokenTtlConfig;
   /**
    * Resolve unregistered HTTPS client_ids as OAuth Client ID Metadata Documents instead of
    * requiring Dynamic Client Registration (MCP 2026-07-28; DCR is now deprecated in the spec

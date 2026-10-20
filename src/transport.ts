@@ -19,6 +19,7 @@ import type { KvLike } from "./storage/types.js";
 import type { ToolContext, ToolDef, MutatingToolDef, ObservabilityHooks } from "./config.js";
 import { registerTools } from "./tools/registry.js";
 import { MAX_BODY_BYTES, readCappedBody } from "./http/body-limit.js";
+import type { WaitUntil } from "./http/wait-until.js";
 
 /** JSON-RPC error codes used by the transport layer. */
 export const JSON_RPC_ERROR = {
@@ -75,6 +76,11 @@ export interface McpRequestDeps {
    * carrying an `Origin` header is rejected).
    */
   allowedOrigins?: string[];
+  /**
+   * The runtime's `waitUntil` (Workers/edge), so fire-and-forget hooks (`onToolCall`,
+   * `onToolError`) aren't cancelled once the response is sent. Omit on Node.
+   */
+  waitUntil?: WaitUntil;
 }
 
 /**
@@ -130,7 +136,7 @@ export async function handleMcpRequest(req: Request, deps: McpRequestDeps): Prom
   if (!allowed) {
     return Response.json(jsonRpcError(JSON_RPC_ERROR.RATE_LIMITED, "Rate limit exceeded"), {
       status: 429,
-      headers: { "Retry-After": "60" },
+      headers: { "Retry-After": String(deps.rateLimiter.secondsUntilReset?.() ?? 3600) },
     });
   }
 
@@ -156,6 +162,7 @@ export async function handleMcpRequest(req: Request, deps: McpRequestDeps): Prom
     storage: deps.storage,
     env: deps.env,
     hooks: deps.hooks,
+    waitUntil: deps.waitUntil,
   };
 
   // ponytail: a handler per request (the factory closes over this request's ctx). Cheap —

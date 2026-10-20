@@ -12,6 +12,11 @@ export interface RateLimiter {
   checkUser(userId: string): Promise<boolean>;
   checkIpAuthorize(ip: string): Promise<boolean>;
   checkIpToken(ip: string): Promise<boolean>;
+  /**
+   * Seconds until the current window resets — sent as `Retry-After` on a 429. Optional so
+   * custom limiters keep compiling; when absent the kit sends a conservative full hour.
+   */
+  secondsUntilReset?(): number;
 }
 
 async function checkBucket(storage: KvLike, key: string, limit: number): Promise<boolean> {
@@ -45,5 +50,7 @@ export function createRateLimiter({
     checkUser: (userId) => checkBucket(storage, userRateKey(userId, hourBucket()), userLimit),
     checkIpAuthorize: (ip) => checkBucket(storage, ipAuthRateKey(ip, hourBucket()), ipAuthLimit),
     checkIpToken: (ip) => checkBucket(storage, ipTokenRateKey(ip, hourBucket()), ipTokenLimit),
+    // Fixed windows: a bucket only refills when the hour rolls over.
+    secondsUntilReset: () => Math.ceil((MS_PER_HOUR - (now() % MS_PER_HOUR)) / 1000),
   };
 }

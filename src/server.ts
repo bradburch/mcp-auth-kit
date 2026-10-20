@@ -13,11 +13,12 @@ import { mountOAuthRoutes } from "./oauth/routes.js";
 import { mountDiscovery } from "./oauth/discovery.js";
 import { createRateLimiter } from "./rate-limit.js";
 import { handleMcpRequest, jsonRpcError, JSON_RPC_ERROR } from "./transport.js";
+import { waitUntilFor } from "./http/wait-until.js";
 
 /** Default server identity reported to MCP clients (override via config.name / config.version). */
 const DEFAULT_SERVER_NAME = "mcp-oauth-kit";
 // Keep in sync with package.json's "version" — nothing enforces this automatically.
-const DEFAULT_SERVER_VERSION = "0.3.0";
+const DEFAULT_SERVER_VERSION = "0.4.0";
 
 /** JSON-RPC error for the GET/DELETE 405 responses (no GET stream / sessions in stateless mode). */
 function methodNotAllowed(message: string): Response {
@@ -81,6 +82,7 @@ export function createMcpServer(config: McpServerConfig): Hono {
     scopes: config.scopes,
     baseUrl: config.baseUrl,
     allowClientIdMetadataDocuments: config.allowClientIdMetadataDocuments,
+    tokenTtl: config.tokenTtl,
   });
 
   const rateLimiter = createRateLimiter({
@@ -101,6 +103,7 @@ export function createMcpServer(config: McpServerConfig): Hono {
     hooks: config.hooks,
     rateLimiter,
     ipExtractor: config.ipExtractor,
+    scopes: config.scopes,
   });
 
   const hooks = config.hooks ?? {};
@@ -119,6 +122,7 @@ export function createMcpServer(config: McpServerConfig): Hono {
       hooks,
       defaultScopes: config.scopes.filter((s) => s.default).map((s) => s.name),
       allowedOrigins: config.allowedOrigins ?? [],
+      waitUntil: waitUntilFor(c),
     }),
   );
 

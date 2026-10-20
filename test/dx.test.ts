@@ -372,7 +372,7 @@ describe("review fixes", () => {
         get: inner.get,
         delete: inner.delete,
         put: async (k, v, o) => {
-          if (k.startsWith("mcp:idempotent:") && !v.includes("__pending")) {
+          if (k.startsWith("mcp:idempotent:") && !v.includes(`"pending":true`)) {
             throw new Error("KV quota exceeded: internal-detail");
           }
           return inner.put(k, v, o);

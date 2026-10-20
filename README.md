@@ -2,7 +2,7 @@
 
 A production-minded MCP server kit: OAuth 2.1/PKCE, rate limiting, scope-gated tools, and two-phase confirm — bring your own tools, identity, and storage.
 
-> **⚠️ Status: pre-1.0 (`0.3.0`).** The OAuth core is independently reviewed and tested, but the API may still change and there are **deliberate design limitations** to understand before production use — most importantly: single-use code redemption, refresh-token rotation, and confirm idempotency are **best-effort, not exactly-once** on a storage backend without compare-and-swap; and per-IP rate limiting needs a correct `ipExtractor` when you're not behind Cloudflare. Read [SECURITY.md](https://github.com/bradburch/mcp-auth-kit/blob/main/SECURITY.md#scope-and-known-limitations) before deploying, and pin a version.
+> **⚠️ Status: pre-1.0 (`0.4.0`).** The OAuth core is independently reviewed and tested, but the API may still change and there are **deliberate design limitations** to understand before production use — most importantly: single-use code redemption, refresh-token rotation, and confirm idempotency are **best-effort, not exactly-once** on a storage backend without compare-and-swap; and per-IP rate limiting needs a correct `ipExtractor` when you're not behind Cloudflare. Read [SECURITY.md](https://github.com/bradburch/mcp-auth-kit/blob/main/SECURITY.md#scope-and-known-limitations) before deploying, and pin a version.
 
 **New here?** Start with the [How-to-use guide](https://github.com/bradburch/mcp-auth-kit/blob/main/docs/how-to-use.md) for a step-by-step walkthrough (including an end-to-end OAuth flow you can run with `curl`). This README is the full config/API reference.
 
@@ -23,6 +23,9 @@ TypeScript projects that type-check libraries (`skipLibCheck: false`) also need
 
 Node **22+** is required, and your project must be ESM (`"type": "module"` in
 `package.json`) — the package publishes an ESM-only `exports` map with no `require` condition.
+
+On Node you also need the Hono adapter as a runtime dependency: `npm install @hono/node-server`
+(Workers, Lambda and Vercel use their own adapters — see [docs/deploy.md](https://github.com/bradburch/mcp-auth-kit/blob/main/docs/deploy.md)).
 
 ## Quick start
 
@@ -91,41 +94,74 @@ serve({ fetch: app.fetch, port: 3000 });
 Point an MCP client at `http://localhost:3000/mcp` and it will run the OAuth flow against the
 built-in login page.
 
+**Plain JavaScript works too.** Nothing above needs TypeScript: save it as `server.js` and run
+`node server.js`. `defineTool` is only a typing helper — in JS you can pass the tool objects
+directly. (Node 22.18+ / 23.6+ can also run the `.ts` file as-is via built-in type stripping.)
+
+### Adding your own routes
+
+`createMcpServer` returns a plain Hono app, so you can mount it inside your own:
+
+```ts
+import { Hono } from "hono";
+
+const app = new Hono();
+app.get("/", (c) => c.text("Hello"));
+app.route("/", createMcpServer({/* ... */}));
+```
+
+Mount it at `/` (see the origin-root requirement under [Endpoints](#endpoints-mounted-by-createmcpserver))
+and keep your routes off the paths the kit owns: `/.well-known/oauth-authorization-server`,
+`/.well-known/oauth-protected-resource` (and its `/mcp` sub-path), `/register`, `/authorize`,
+`/token`, `/revoke`, and `/mcp`. The kit's login page creates **no browser session or cookie** —
+it only issues an OAuth code to the MCP client — so a web UI of your own needs its own auth.
+
 See [`examples/appointments/server.ts`](https://github.com/bradburch/mcp-auth-kit/blob/main/examples/appointments/server.ts) for a complete working server.
 
 ## Config reference
 
 `createMcpServer(config: McpServerConfig)` accepts:
 
-| Field                            | Type                                | Required | Description                                                                                                                                                                                                                                                         |
-| -------------------------------- | ----------------------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `baseUrl`                        | `string`                            | Yes      | Public base URL of this server (used in OAuth discovery and redirect URIs). Must be `https://` unless the hostname is `localhost`/`127.0.0.1` — the server throws at construction time otherwise.                                                                   |
-| `name` / `version`               | `string`                            | No       | Server identity reported to MCP clients on `initialize`. Defaults to `mcp-oauth-kit` / the kit version.                                                                                                                                                             |
-| `storage`                        | `KvLike`                            | Yes      | Key-value store for tokens, rate-limit counters, and idempotency records.                                                                                                                                                                                           |
-| `scopes`                         | `ScopeConfig[]`                     | Yes      | OAuth scopes the server advertises.                                                                                                                                                                                                                                 |
-| `identity`                       | `IdentityConfig`                    | No       | Built-in login-form identity provider. Omit to use a custom provider.                                                                                                                                                                                               |
-| `tools`                          | `Array<ToolDef \| MutatingToolDef>` | Yes      | Tool definitions registered on the MCP server.                                                                                                                                                                                                                      |
-| `rateLimits`                     | `RateLimitConfig`                   | No       | Per-hour thresholds for tool calls and OAuth endpoints.                                                                                                                                                                                                             |
-| `hooks`                          | `ObservabilityHooks`                | No       | Async callbacks for tool calls, OAuth lifecycle events, and mutation audit.                                                                                                                                                                                         |
-| `ipExtractor`                    | `(req: Request) => string`          | No       | Override how the trusted client IP is derived for per-IP rate limiting (see below).                                                                                                                                                                                 |
-| `allowClientIdMetadataDocuments` | `boolean`                           | No       | Resolve unregistered `https://` client_ids as [Client ID Metadata Documents](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization) instead of requiring Dynamic Client Registration. Off by default (see "OAuth / PKCE client flow" below). |
-| `allowedOrigins`                 | `string[]`                          | No       | Exact-match allowlist for the browser `Origin` header on `POST /mcp` (DNS-rebinding protection). Requests with no `Origin` header are always allowed; a request WITH one is rejected unless it's in this list.                                                      |
+| Field                            | Type                                     | Required | Description                                                                                                                                                                                                                                                                                                       |
+| -------------------------------- | ---------------------------------------- | -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `baseUrl`                        | `string`                                 | Yes      | Public base URL of this server (used in OAuth discovery and redirect URIs). Must be `https://` unless the hostname is `localhost`/`127.0.0.1` — the server throws at construction time otherwise.                                                                                                                 |
+| `name` / `version`               | `string`                                 | No       | Server identity reported to MCP clients on `initialize`. Defaults to `mcp-oauth-kit` / the kit version.                                                                                                                                                                                                           |
+| `storage`                        | `KvLike`                                 | Yes      | Key-value store for tokens, rate-limit counters, and idempotency records.                                                                                                                                                                                                                                         |
+| `scopes`                         | `ScopeConfig[]`                          | Yes      | OAuth scopes the server advertises.                                                                                                                                                                                                                                                                               |
+| `identity`                       | `IdentityConfig`                         | No       | Built-in login-form identity provider. Omit to use a custom provider.                                                                                                                                                                                                                                             |
+| `tools`                          | `Array<ToolDef \| MutatingToolDef>`      | Yes      | Tool definitions registered on the MCP server.                                                                                                                                                                                                                                                                    |
+| `rateLimits`                     | `RateLimitConfig`                        | No       | Per-hour thresholds for tool calls and OAuth endpoints.                                                                                                                                                                                                                                                           |
+| `hooks`                          | `ObservabilityHooks`                     | No       | Async callbacks for tool calls, OAuth lifecycle events, and mutation audit.                                                                                                                                                                                                                                       |
+| `ipExtractor`                    | `(req: Request, env: unknown) => string` | No       | Override how the trusted client IP is derived for per-IP rate limiting (see below). `env` is Hono's `c.env`.                                                                                                                                                                                                      |
+| `tokenTtl`                       | `TokenTtlConfig`                         | No       | Override token lifetimes: `{ accessTokenSeconds?, refreshTokenSeconds? }` (defaults 3600 / 7776000 — 1 hour / 90 days).                                                                                                                                                                                           |
+| `allowClientIdMetadataDocuments` | `boolean`                                | No       | Resolve unregistered `https://` client_ids as [Client ID Metadata Documents](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization) instead of requiring Dynamic Client Registration. Off by default (see "OAuth / PKCE client flow" below).                                               |
+| `allowedOrigins`                 | `string[]`                               | No       | Exact-match allowlist for the browser `Origin` header on `POST /mcp` (DNS-rebinding protection). Requests with no `Origin` header are always allowed; a request WITH one is rejected unless it's in this list. `http://localhost:3000` and `http://127.0.0.1:3000` are different origins — list each one you use. |
 
 ### `ScopeConfig`
 
 | Field         | Type       | Description                                          |
 | ------------- | ---------- | ---------------------------------------------------- |
 | `name`        | `string`   | Scope name (e.g. `"account:read"`).                  |
-| `description` | `string?`  | Human-readable description.                          |
+| `description` | `string?`  | Human-readable description, shown on the login page. |
 | `default`     | `boolean?` | Granted when the client requests no specific scopes. |
 
 ### `IdentityConfig`
 
-| Field      | Type                                  | Description                                                              |
-| ---------- | ------------------------------------- | ------------------------------------------------------------------------ |
-| `fields`   | `IdentityField[]`                     | Fields rendered on the built-in login form.                              |
-| `branding` | `Branding?`                           | App name, logo URL, and accent colour for the form.                      |
-| `verify`   | `(fields) => Promise<string \| null>` | Validate credentials. Return a stable userId string or `null` to reject. |
+| Field      | Type                                                   | Description                                                              |
+| ---------- | ------------------------------------------------------ | ------------------------------------------------------------------------ |
+| `fields`   | `IdentityField[]`                                      | Fields rendered on the built-in login form.                              |
+| `branding` | `Branding?`                                            | App name, logo URL, and accent colour for the form.                      |
+| `verify`   | `(fields, { request, ip }) => Promise<string \| null>` | Validate credentials. Return a stable userId string or `null` to reject. |
+
+Every field value reaches `verify` as a string (missing fields are `""`); non-password fields
+are trimmed, `type: "password"` fields are passed verbatim and never refilled after a failed
+sign-in. The login page lists the scopes being granted. `GET /authorize` answers `400` instead
+of rendering the form when the `client_id` is unknown or the `redirect_uri` isn't registered.
+
+**Per-account lockout is your job.** The kit rate-limits `/authorize` per IP only
+(`ipAuthorizePerHour`), which doesn't stop an attacker spreading guesses across IPs. If your
+credential is guessable (a 6-digit code), count failures per account in `verify` — the second
+argument carries the raw `request` and the trusted client `ip` (from `ipExtractor`).
 
 ### `IdentityField`
 
@@ -148,37 +184,41 @@ See [`examples/appointments/server.ts`](https://github.com/bradburch/mcp-auth-ki
 
 All limits are per-hour. Omit a field to use the default.
 
-| Field                | Type      | Default | Description                                                           |
-| -------------------- | --------- | ------- | --------------------------------------------------------------------- |
-| `userPerHour`        | `number?` | 50      | Max MCP tool calls per user per hour.                                 |
-| `ipAuthorizePerHour` | `number?` | 10      | Max OAuth authorize attempts per IP per hour (brute-force guard).     |
-| `ipTokenPerHour`     | `number?` | 30      | Max requests per IP per hour to `/token`, `/register`, and `/revoke`. |
+| Field                | Type      | Default | Description                                                                                                                                |
+| -------------------- | --------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| `userPerHour`        | `number?` | 50      | Max authenticated `POST /mcp` requests per user per hour — every request counts (`tools/list`, `server/discover`, …), not just tool calls. |
+| `ipAuthorizePerHour` | `number?` | 10      | Max OAuth authorize attempts per IP per hour (brute-force guard).                                                                          |
+| `ipTokenPerHour`     | `number?` | 30      | Max requests per IP per hour to `/token`, `/register`, and `/revoke`.                                                                      |
 
-A limited OAuth request gets `429 {"error":"temporarily_unavailable","error_description":"rate limit exceeded (<key>)"}` naming the exhausted key. Every OAuth round trip (including a scope step-up) costs one `/authorize` attempt, so during local development raise `ipAuthorizePerHour` or restart the (memory-storage) server when iterating on a client.
+A limited OAuth request gets `429 {"error":"temporarily_unavailable","error_description":"rate limit exceeded (<key>)"}` naming the exhausted key. Every `429` (OAuth endpoints and `/mcp`) carries `Retry-After` set to the seconds until the hourly window resets. Windows are fixed clock hours, so a client can spend up to twice a limit across an hour boundary. Every OAuth round trip (including a scope step-up) costs one `/authorize` attempt, so during local development raise `ipAuthorizePerHour` or restart the (memory-storage) server when iterating on a client.
 
 The `/register` and `/revoke` endpoints share the per-IP `ipTokenPerHour` bucket so that unauthenticated requests can't be used for storage-exhaustion abuse.
 
 Rate-limit counters use a non-atomic read-modify-write (KV has no atomic increment) — counts may under-count under high concurrency. For strict enforcement, wrap `createRateLimiter` with a Durable Object counter or equivalent.
 
-**Trusted client IP.** By default the per-IP source is `CF-Connecting-IP` (authoritative on Cloudflare) falling back to the first hop of `X-Forwarded-For`. `X-Forwarded-For` is client-spoofable unless a trusted proxy overwrites it, so **off-Cloudflare deployments must pass a custom `ipExtractor`** that derives the IP from a source you control — otherwise the brute-force guards can be bypassed by rotating the header:
+**Trusted client IP.** By default the per-IP source is `CF-Connecting-IP` (authoritative on Cloudflare) falling back to the first hop of `X-Forwarded-For`. `X-Forwarded-For` is client-spoofable unless a trusted proxy overwrites it, so **off-Cloudflare deployments must pass a custom `ipExtractor`** that derives the IP from a source you control — otherwise the brute-force guards can be bypassed by rotating the header. Its second argument is Hono's `c.env`; on `@hono/node-server` that carries the socket, so with no proxy in front use the real peer address:
 
 ```ts
+import type { HttpBindings } from "@hono/node-server";
+
 createMcpServer({
   // ...
-  ipExtractor: (req) => req.headers.get("True-Client-IP") ?? "unknown",
+  ipExtractor: (_req, env) => (env as HttpBindings).incoming.socket.remoteAddress ?? "unknown",
 });
 ```
 
+Behind a proxy, read the header that proxy sets — e.g. `(req) => req.headers.get("True-Client-IP") ?? "unknown"`. That is only safe if the proxy always overwrites the header; otherwise a client can send its own.
+
 ### `ObservabilityHooks`
 
-All callbacks are fire-and-forget except `onMutation` (which is awaited). Errors are swallowed so a throwing hook never fails the request.
+All callbacks are fire-and-forget except `onMutation` (which is awaited). Errors are swallowed so a throwing hook never fails the request. On runtimes with `waitUntil` (Cloudflare Workers), the fire-and-forget hooks are registered with it so they finish after the response is sent — pass the execution context through (`fetch: (req, env, ctx) => app.fetch(req, env, ctx)`).
 
-| Field         | Type                       | Description                                                                                                                                                                                                                                                                                                                                             |
-| ------------- | -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `onToolCall`  | `(event) => Promise<void>` | Called when a tool is invoked (including a mutating tool's preview call), concurrently with the handler. `event.input` is the same object the handler receives.                                                                                                                                                                                         |
-| `onAudit`     | `(event) => Promise<void>` | Called on OAuth lifecycle events (`client_registered`, `token_issued`, `token_refreshed`, `token_revoked`).                                                                                                                                                                                                                                             |
-| `onMutation`  | `(event) => Promise<void>` | Called (awaited) after a mutating tool's execute phase succeeds.                                                                                                                                                                                                                                                                                        |
-| `onToolError` | `(event) => Promise<void>` | Called when a handler, `preview`, or `execute` throws or returns an unserializable value, or a storage call in the mutating flow fails. `event.phase` is `handler`/`preview`/`execute`/`storage`; `event.error` is the real error the client never sees. A `storage` event after `execute` means the side effect happened but its result wasn't cached. |
+| Field         | Type                       | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| ------------- | -------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `onToolCall`  | `(event) => Promise<void>` | Called when a tool is invoked (including a mutating tool's preview call), concurrently with the handler. `event.input` is the same object the handler receives.                                                                                                                                                                                                                                                                                                  |
+| `onAudit`     | `(event) => Promise<void>` | Called on OAuth lifecycle events (`client_registered`, `token_issued`, `token_refreshed`, `token_revoked`). The token events include `userId`.                                                                                                                                                                                                                                                                                                                   |
+| `onMutation`  | `(event) => Promise<void>` | Called (awaited) after a mutating tool's execute phase succeeds, with `{ userId, toolName, summary, data, result, idempotencyKey }`. Not called when `confirm_request` replays a cached result, and only for two-phase tools — log plain tools' side effects in their handler.                                                                                                                                                                                   |
+| `onToolError` | `(event) => Promise<void>` | Called when a handler, `preview`, or `execute` throws or returns an unserializable value, or a storage call in the mutating flow fails. `event.phase` is `handler`/`preview`/`execute`/`storage`; `event.error` is the real error the client never sees; `event.expected` is `true` for a `ToolError` (a deliberate rejection — filter it out of error alerting). A `storage` event after `execute` means the side effect happened but its result wasn't cached. |
 
 ## Tool definitions
 
@@ -243,8 +283,10 @@ handler reflects the token's full granted scope list.
 
 Mutating tools never execute their side effect on the first call. The flow is:
 
-1. **Preview phase** — the MCP client calls the tool. `mutating.preview(input, ctx)` runs, returns a `{ summary, data }` preview. The kit stores it under a single-use confirmation token (5-minute TTL) and returns the token to the client.
-2. **Confirm phase** — the MCP client calls the built-in `confirm_request` tool with the `confirmationToken` from step 1 and a unique `idempotencyKey`. `mutating.execute(data, ctx)` runs, and the result is returned (and cached for 10 minutes under the idempotency key). The confirmation token is bound to the user who previewed it: a confirm from a different user is rejected and does not consume the token.
+1. **Preview phase** — the MCP client calls the tool. `mutating.preview(input, ctx)` runs, returns a `{ summary, data }` preview. The kit stores it under a single-use confirmation token (5-minute TTL) and returns a `PreviewResult` (`{ status: "preview", summary, confirmationToken }`) to the client.
+2. **Confirm phase** — the MCP client calls the built-in `confirm_request` tool with the `confirmationToken` from step 1 and a unique `idempotencyKey`. `mutating.execute(data, ctx)` runs, and the result is returned (and cached for 10 minutes under the idempotency key). The confirmation token is bound to the user who previewed it: a confirm from a different user is rejected and does not consume the token. Reusing an `idempotencyKey` with a _different_ confirmation token is refused rather than replaying the other result. Refusals come back as `isError: true` with text `{"success":false,"error":"..."}`.
+
+`data` is stored as JSON, so it must be JSON-serializable (no `Date`/`Map`/`BigInt`), and `execute` can run up to 5 minutes after `preview` — re-check anything that may have changed (availability, balances) instead of trusting the preview. `summary` is shown before the user confirms and passed to `onMutation` after, so phrase it tense-neutral (`"Book 09:00"`, not `"Booked 09:00"`).
 
 > **Idempotency — best-effort, not exactly-once:** The kit writes a `"pending"` sentinel before
 > executing, so a concurrent retry that sees it backs off and asks the caller to retry. A retry
@@ -318,8 +360,10 @@ The kit implements OAuth 2.1 with PKCE (S256). A standards-compliant MCP client 
 3. **Authorization** — redirect the user to `GET /authorize` with `response_type=code`, `client_id`, `redirect_uri`, `code_challenge` (S256 PKCE), and optionally `scope`. The built-in identity form collects credentials and calls your `identity.verify`. On success, the server 302-redirects to `redirect_uri?code=<auth_code>&iss=<baseUrl>` (the `iss` parameter, RFC 9207, lets a compliant client detect an authorization-server mix-up before redeeming the code).
 4. **Token exchange** — `POST /token` with `grant_type=authorization_code`, `code`, `client_id`, `redirect_uri`, and `code_verifier`. Returns `{ access_token, refresh_token, expires_in, token_type: "Bearer" }`.
 5. **Call tools** — send MCP JSON-RPC to `POST /mcp` with `Authorization: Bearer <access_token>`. A call to a tool whose scope the token lacks gets a `403` `insufficient_scope` challenge; the client re-runs authorization for that scope (step-up) — non-default scopes are obtained this way, since the `401` challenge only advertises default scopes.
-6. **Token refresh** — `POST /token` with `grant_type=refresh_token` and `refresh_token`. Issues a new access + refresh token pair (rotation). Note: the prior access token remains valid until its TTL (~1 hour) expires naturally. **Reuse detection (RFC 9700):** all tokens rotated from one authorization share a family; presenting a refresh token that has already been rotated out revokes the entire family (its active access + refresh tokens), containing a stolen token. Detection is eventually-consistent — like single-use code redemption, a concurrent race isn't fully closed without a strongly-consistent store. **Client implication:** always refresh with the newest refresh token and never retry a refresh using a previously-rotated token — doing so is indistinguishable from theft and will revoke the whole session.
-7. **Revocation** — `POST /revoke` with the access or refresh token to invalidate it immediately (paired token is also revoked).
+6. **Token refresh** — `POST /token` with `grant_type=refresh_token` and `refresh_token`. Issues a new access + refresh token pair (rotation). Note: the prior access token remains valid until its TTL (1 hour by default; see `tokenTtl`) expires naturally. **Reuse detection (RFC 9700):** all tokens rotated from one authorization share a family; presenting a refresh token that has already been rotated out revokes the entire family — every access token in the lineage, older generations still inside their TTL included, plus the live refresh token — containing a stolen token. Detection is eventually-consistent — like single-use code redemption, a concurrent race isn't fully closed without a strongly-consistent store. **Client implication:** always refresh with the newest refresh token and never retry a refresh using a previously-rotated token — doing so is indistinguishable from theft and will revoke the whole session.
+7. **Revocation** — `POST /revoke` with the access or refresh token to invalidate it immediately. This revokes the whole family, like reuse detection.
+
+Authorization codes are single-use: a failed redemption (wrong PKCE verifier, client, or redirect URI) consumes the code, and replaying an already-redeemed code revokes the tokens minted from it (RFC 6749 §4.1.2). A code authorized without `resource` still yields tokens bound to `${baseUrl}/mcp`.
 
 The official TypeScript SDK client (`@modelcontextprotocol/client`) does all of this for you — see [Connect with the TypeScript SDK client](https://github.com/bradburch/mcp-auth-kit/blob/main/docs/how-to-use.md#connect-with-the-typescript-sdk-client).
 
@@ -346,7 +390,7 @@ See [docs/deploy.md](https://github.com/bradburch/mcp-auth-kit/blob/main/docs/de
 - `ToolError` — throw to reject a tool call with a client-visible message
 - `isMutating(t)` — type guard: `true` when `t` is a `MutatingToolDef`
 
-Types: `McpServerConfig`, `ScopeConfig`, `IdentityField`, `IdentityConfig`, `Branding`, `ObservabilityHooks`, `ToolContext`, `ToolDef`, `MutatingToolDef`, `RateLimitConfig`, `KvLike`, `KVNamespaceLike`, `AuthorizePageParams`
+Types: `McpServerConfig`, `ScopeConfig`, `IdentityField`, `IdentityConfig`, `Branding`, `ObservabilityHooks`, `ToolContext`, `ToolDef`, `MutatingToolDef`, `PreviewResult`, `RateLimitConfig`, `KvLike`, `KVNamespaceLike`, `AuthorizePageParams`
 
 ### Advanced / low-level API
 
@@ -356,14 +400,14 @@ directly. **The origin-root requirement above still applies** — none of these 
 pieces lift it; RFC 8414 discovery breaks under a path prefix regardless of which API layer
 mounts the routes.
 
-- `createOAuthProvider(config)` — build the OAuth provider independently. `OAuthProviderConfig` fields: `storage`, `scopes`, `baseUrl`, optional `now?: () => number` (injectable clock for deterministic testing), and optional `allowClientIdMetadataDocuments?: boolean` (see the Config reference table above).
+- `createOAuthProvider(config)` — build the OAuth provider independently. `OAuthProviderConfig` fields: `storage`, `scopes`, `baseUrl`, optional `now?: () => number` (injectable clock for deterministic testing), optional `tokenTtl?: TokenTtlConfig`, and optional `allowClientIdMetadataDocuments?: boolean` (see the Config reference table above).
 - `mountOAuthRoutes(app, deps)` — mount `/register`, `/authorize`, `/token`, `/revoke` onto an existing Hono app.
 - `mountDiscovery(app, deps)` — mount `/.well-known/oauth-authorization-server` and `/.well-known/oauth-protected-resource`.
 - `createRateLimiter({ storage, config? })` — build the rate limiter independently.
 - `handleMcpRequest(req, deps)` — handle a single `POST /mcp` request; returns a `Promise<Response>`.
 - `renderAuthorizePage(identity, params)` — render the built-in login form HTML (use when building a custom `/authorize` handler).
 
-Types: `OAuthProvider`, `OAuthProviderConfig`, `TokenPair`, `OAuthRouteDeps`, `DiscoveryDeps`, `RateLimiter`, `McpRequestDeps`
+Types: `OAuthProvider`, `OAuthProviderConfig`, `TokenPair`, `TokenTtlConfig`, `OAuthRouteDeps`, `DiscoveryDeps`, `RateLimiter`, `McpRequestDeps`
 
 ## License
 
