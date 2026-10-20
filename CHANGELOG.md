@@ -19,6 +19,8 @@ All notable changes to this project are documented here. The format is based on
   is OAuth JSON (`{"error":"insufficient_scope",...}`) rather than a JSON-RPC envelope, and it
   now also covers calls inside a legacy JSON-RPC batch (which previously got a 200 with an
   `isError` result).
+- OAuth `429` responses name the exhausted limit in `error_description`
+  (e.g. `rate limit exceeded (ipAuthorizePerHour)`).
 - `OAuthProvider.verifyAccessToken` also returns the token's `clientId`, which is now passed
   to the SDK's `authInfo` (it was always `""`).
 

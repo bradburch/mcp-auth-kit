@@ -2,9 +2,9 @@
 
 A production-minded MCP server kit: OAuth 2.1/PKCE, rate limiting, scope-gated tools, and two-phase confirm — bring your own tools, identity, and storage.
 
-> **⚠️ Status: pre-1.0 (`0.3.0`).** The OAuth core is independently reviewed and tested, but the API may still change and there are **deliberate design limitations** to understand before production use — most importantly: single-use code redemption, refresh-token rotation, and confirm idempotency are **best-effort, not exactly-once** on a storage backend without compare-and-swap; and per-IP rate limiting needs a correct `ipExtractor` when you're not behind Cloudflare. Read [SECURITY.md](SECURITY.md#scope-and-known-limitations) before deploying, and pin a version.
+> **⚠️ Status: pre-1.0 (`0.3.0`).** The OAuth core is independently reviewed and tested, but the API may still change and there are **deliberate design limitations** to understand before production use — most importantly: single-use code redemption, refresh-token rotation, and confirm idempotency are **best-effort, not exactly-once** on a storage backend without compare-and-swap; and per-IP rate limiting needs a correct `ipExtractor` when you're not behind Cloudflare. Read [SECURITY.md](https://github.com/bradburch/mcp-auth-kit/blob/main/SECURITY.md#scope-and-known-limitations) before deploying, and pin a version.
 
-**New here?** Start with the [How-to-use guide](docs/how-to-use.md) for a step-by-step walkthrough (including an end-to-end OAuth flow you can run with `curl`). This README is the full config/API reference.
+**New here?** Start with the [How-to-use guide](https://github.com/bradburch/mcp-auth-kit/blob/main/docs/how-to-use.md) for a step-by-step walkthrough (including an end-to-end OAuth flow you can run with `curl`). This README is the full config/API reference.
 
 ## Install
 
@@ -18,17 +18,30 @@ Peer dependencies (not bundled):
 npm install hono @modelcontextprotocol/server zod
 ```
 
+TypeScript projects that type-check libraries (`skipLibCheck: false`) also need
+`@types/node` — the SDK's published types reference `Buffer`.
+
 Node **22+** is required, and your project must be ESM (`"type": "module"` in
 `package.json`) — the package publishes an ESM-only `exports` map with no `require` condition.
 
 ## Quick start
 
+```bash
+npm install @hono/node-server   # Node adapter; see docs/deploy.md for Workers, Lambda, Vercel
+```
+
 ```ts
+// server.ts — run with `npx tsx server.ts`
+import { serve } from "@hono/node-server";
 import { z } from "zod";
 import { createMcpServer, createMemoryStorage, defineTool } from "mcp-oauth-kit";
 
+// Stand-in for your user store — replace with a real lookup.
+const users = new Map([["ada@example.com", { id: "user-ada", code: "123456" }]]);
+
 const app = createMcpServer({
-  baseUrl: "https://mcp.example.com",
+  // Your public https:// URL in production; http:// is allowed only for localhost.
+  baseUrl: "http://localhost:3000",
   storage: createMemoryStorage(), // swap for createCloudflareKvStorage in production
   scopes: [
     { name: "account:read", default: true },
@@ -46,8 +59,8 @@ const app = createMcpServer({
     ],
     verify: async (fields) => {
       // Return a stable userId string on success, null to reject.
-      const user = await db.lookupUser(fields.email, fields.code);
-      return user ? user.id : null;
+      const user = users.get(fields.email);
+      return user && user.code === fields.code ? user.id : null;
     },
   },
   tools: [
@@ -71,11 +84,14 @@ const app = createMcpServer({
   ],
 });
 
-// app is a Hono instance — export it for your runtime adapter.
-export default app;
+// app is a Hono instance — wrap it in your runtime's adapter.
+serve({ fetch: app.fetch, port: 3000 });
 ```
 
-See `examples/appointments/server.ts` for a complete working server.
+Point an MCP client at `http://localhost:3000/mcp` and it will run the OAuth flow against the
+built-in login page.
+
+See [`examples/appointments/server.ts`](https://github.com/bradburch/mcp-auth-kit/blob/main/examples/appointments/server.ts) for a complete working server.
 
 ## Config reference
 
@@ -137,6 +153,8 @@ All limits are per-hour. Omit a field to use the default.
 | `userPerHour`        | `number?` | 50      | Max MCP tool calls per user per hour.                                 |
 | `ipAuthorizePerHour` | `number?` | 10      | Max OAuth authorize attempts per IP per hour (brute-force guard).     |
 | `ipTokenPerHour`     | `number?` | 30      | Max requests per IP per hour to `/token`, `/register`, and `/revoke`. |
+
+A limited OAuth request gets `429 {"error":"temporarily_unavailable","error_description":"rate limit exceeded (<key>)"}` naming the exhausted key. Every OAuth round trip (including a scope step-up) costs one `/authorize` attempt, so during local development raise `ipAuthorizePerHour` or restart the (memory-storage) server when iterating on a client.
 
 The `/register` and `/revoke` endpoints share the per-IP `ipTokenPerHour` bucket so that unauthenticated requests can't be used for storage-exhaustion abuse.
 
@@ -254,7 +272,7 @@ defineTool({
 
 #### `confirm_request` tool
 
-The kit registers one shared `confirm_request` tool automatically. Its input schema:
+The kit registers one shared `confirm_request` tool automatically — listed for a caller only when at least one mutating tool's scope is granted to them. Its input schema:
 
 ```ts
 z.object({
@@ -299,19 +317,21 @@ The kit implements OAuth 2.1 with PKCE (S256). A standards-compliant MCP client 
 2. **Client registration** — either **Dynamic Client Registration**: `POST /register` with `{ "redirect_uris": ["https://your-client/callback"] }` returns a `client_id`; or, if `allowClientIdMetadataDocuments` is enabled, a **Client ID Metadata Document**: use an `https://` URL hosting a `{ client_id, redirect_uris, ... }` JSON document as the `client_id` directly, with no registration call (MCP 2026-07-28 deprecates DCR in favor of this — DCR remains fully supported here).
 3. **Authorization** — redirect the user to `GET /authorize` with `response_type=code`, `client_id`, `redirect_uri`, `code_challenge` (S256 PKCE), and optionally `scope`. The built-in identity form collects credentials and calls your `identity.verify`. On success, the server 302-redirects to `redirect_uri?code=<auth_code>&iss=<baseUrl>` (the `iss` parameter, RFC 9207, lets a compliant client detect an authorization-server mix-up before redeeming the code).
 4. **Token exchange** — `POST /token` with `grant_type=authorization_code`, `code`, `client_id`, `redirect_uri`, and `code_verifier`. Returns `{ access_token, refresh_token, expires_in, token_type: "Bearer" }`.
-5. **Call tools** — send MCP JSON-RPC to `POST /mcp` with `Authorization: Bearer <access_token>`.
+5. **Call tools** — send MCP JSON-RPC to `POST /mcp` with `Authorization: Bearer <access_token>`. A call to a tool whose scope the token lacks gets a `403` `insufficient_scope` challenge; the client re-runs authorization for that scope (step-up) — non-default scopes are obtained this way, since the `401` challenge only advertises default scopes.
 6. **Token refresh** — `POST /token` with `grant_type=refresh_token` and `refresh_token`. Issues a new access + refresh token pair (rotation). Note: the prior access token remains valid until its TTL (~1 hour) expires naturally. **Reuse detection (RFC 9700):** all tokens rotated from one authorization share a family; presenting a refresh token that has already been rotated out revokes the entire family (its active access + refresh tokens), containing a stolen token. Detection is eventually-consistent — like single-use code redemption, a concurrent race isn't fully closed without a strongly-consistent store. **Client implication:** always refresh with the newest refresh token and never retry a refresh using a previously-rotated token — doing so is indistinguishable from theft and will revoke the whole session.
 7. **Revocation** — `POST /revoke` with the access or refresh token to invalidate it immediately (paired token is also revoked).
+
+The official TypeScript SDK client (`@modelcontextprotocol/client`) does all of this for you — see [Connect with the TypeScript SDK client](https://github.com/bradburch/mcp-auth-kit/blob/main/docs/how-to-use.md#connect-with-the-typescript-sdk-client).
 
 ## Bring your own storage
 
 The default `createMemoryStorage()` is suitable for tests only — it is not persistent and is not shared across isolates or instances; never use it in production. `createCloudflareKvStorage(kv)` wraps a Cloudflare KV namespace for production. For any other backend, implement `KvLike` (three methods: `get`, `put`, `delete`) and pass it as `storage`.
 
-See [docs/storage-adapters.md](docs/storage-adapters.md) for the interface definition and adapter examples (Redis, DynamoDB, Postgres).
+See [docs/storage-adapters.md](https://github.com/bradburch/mcp-auth-kit/blob/main/docs/storage-adapters.md) for the interface definition and adapter examples (Redis, DynamoDB, Postgres).
 
 ## Deploy
 
-See [docs/deploy.md](docs/deploy.md) for runtime-specific entry-point wrappers (Cloudflare Workers, Node, AWS Lambda, Vercel).
+See [docs/deploy.md](https://github.com/bradburch/mcp-auth-kit/blob/main/docs/deploy.md) for runtime-specific entry-point wrappers (Cloudflare Workers, Node, AWS Lambda, Vercel).
 
 ## Public API
 
