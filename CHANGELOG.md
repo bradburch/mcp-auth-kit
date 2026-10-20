@@ -6,7 +6,67 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-19
+
+### Security
+
+- The login page no longer refills `type: "password"` fields after a failed sign-in (the
+  submitted secret was echoed into the 401 HTML).
+- **Behavior:** `GET /authorize` returns `400` for an unknown `client_id` or an unregistered
+  `redirect_uri` instead of rendering the login form, so the real origin can't be lent to a
+  phishing link. `POST /authorize` rejects any `response_type` other than `code`
+  (`unsupported_response_type`).
+- **Behavior:** refresh-token reuse detection, `/revoke`, and a replayed authorization code now
+  revoke the **whole token family**, including older-generation access tokens still inside
+  their TTL (`verifyAccessToken` now checks the family record). Previously only the live pair
+  was revoked.
+- **Behavior:** replaying an already-redeemed authorization code revokes the tokens minted
+  from it (RFC 6749 §4.1.2), and any failed code redemption (wrong PKCE verifier, client, or
+  redirect URI) consumes the code.
+- Tokens from an authorization made without `resource` are bound to `${baseUrl}/mcp`, and the
+  access-token audience check is now strict (a token without a resource is rejected).
+- Authorization codes and confirmation tokens are stored as their SHA-256 hash, like access
+  and refresh tokens, so a storage dump yields nothing redeemable.
+- Caller-influenced storage-key segments (userId, IP, idempotency key, client id) are
+  URI-encoded, so a `:` inside one can't collide two different keys.
+- `confirm_request` with an `idempotencyKey` already used for a **different**
+  `confirmationToken` now returns an error instead of the other confirmation's cached result.
+
+### Added
+
+- `tokenTtl: { accessTokenSeconds?, refreshTokenSeconds? }` config (defaults 1 hour / 90
+  days); `TokenTtlConfig` is exported.
+- `identity.verify(fields, { request, ip })` — a second argument with the raw request and the
+  trusted client IP, for per-account lockout (the kit only rate-limits per IP).
+- `ipExtractor(req, env)` — a second argument with Hono's `c.env`; on `@hono/node-server`
+  the socket peer is `(env as HttpBindings).incoming.socket.remoteAddress`.
+- The login page lists the scopes being granted, with each `ScopeConfig.description`.
+- `PreviewResult` type (`{ status: "preview", summary, confirmationToken }`) is exported.
+- `onMutation` events also carry `input`, `data`, `result`, and `idempotencyKey`.
+- `onToolError` events carry `expected: boolean` — `true` for a `ToolError` rejection.
+- `onAudit` `token_issued` / `token_refreshed` / `token_revoked` events include `userId`.
+- Fire-and-forget hooks (`onToolCall`, `onToolError`, `onAudit`) are registered with the
+  runtime's `waitUntil` when there is one, so a Worker doesn't cancel them after the response.
+  Pass the execution context through: `fetch: (req, env, ctx) => app.fetch(req, env, ctx)`.
+
+### Fixed
+
+- Password fields are passed to `verify` verbatim — they were trimmed.
+- `429` responses on `/mcp` and the OAuth endpoints send `Retry-After` as the seconds until the
+  fixed hourly window resets (was a constant `60`).
+
 ### Changed
+
+- **Behavior:** every `confirm_request` refusal (expired/used token, idempotency-key conflict,
+  request still pending, unknown tool) now returns `isError: true`, with text
+  `{"success":false,"error":"..."}`. Previously these were non-error results.
+- **Behavior:** `onMutation` is not called when `confirm_request` replays a cached result —
+  only when `execute` actually ran.
+- **Upgrade note — storage key format changed.** Because codes/confirmations are now keyed by
+  hash and key segments are URI-encoded, records written before the upgrade are not
+  recognized after it: in-flight authorization codes (≤5 min), pending confirmations (≤5 min),
+  idempotency records (≤10 min), and the current hour's rate-limit counters. Tokens and
+  clients are unaffected.
 
 - **Breaking:** migrated from `@modelcontextprotocol/sdk` v1 to the v2 SDK. Peer dependencies
   are now `@modelcontextprotocol/server ^2.3.1`, `hono ^4.11.4` and `zod ^4.2.0` (zod 3 is no
@@ -200,5 +260,6 @@ for production use.
   bundled `.d.ts` under `node16`/`nodenext`/`bundler` module resolution.
 - Added a `prepublishOnly` build hook so a publish can't ship a stale or empty `dist/`.
 
+[0.4.0]: https://github.com/bradburch/mcp-auth-kit/releases/tag/v0.4.0
 [0.3.0]: https://github.com/bradburch/mcp-auth-kit/releases/tag/v0.3.0
 [0.1.0]: https://github.com/bradburch/mcp-auth-kit/releases/tag/v0.1.0

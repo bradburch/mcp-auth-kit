@@ -21,8 +21,11 @@ export interface AuthorizePageParams {
   scope?: string;
   /** Optional error banner shown above the form. */
   error?: string;
-  /** Previously submitted field values, re-populated on an error re-render. */
+  /** Previously submitted field values, re-populated on an error re-render. Never applied to
+   *  `type: "password"` fields — a secret must not be echoed back into the page. */
   prefill?: Record<string, string>;
+  /** The scopes this sign-in will grant, listed on the form so the user sees what they approve. */
+  grantedScopes?: Array<{ name: string; description?: string }>;
 }
 
 const DEFAULT_ACCENT = "#3b82f6";
@@ -97,7 +100,7 @@ export function renderAuthorizePage(identity: IdentityConfig, params: AuthorizeP
       const id = escapeHtml(f.name);
       const label = escapeHtml(f.label);
       const type = escapeHtml(f.type ?? "text");
-      const value = escapeHtml(params.prefill?.[f.name] ?? "");
+      const value = f.type === "password" ? "" : escapeHtml(params.prefill?.[f.name] ?? "");
       const required = f.required !== false ? "required" : "";
       return `      <label for="${id}">${label}</label>
       <input id="${id}" type="${type}" name="${id}" value="${value}" ${required} />`;
@@ -110,6 +113,15 @@ export function renderAuthorizePage(identity: IdentityConfig, params: AuthorizeP
   const redirectNoticeHtml = isLocalhost
     ? `<div class="redirect-notice warn">⚠ Signing in to a request from <strong>${escapeHtml(redirectHostname)}</strong> (localhost) — only continue if you started this yourself.</div>`
     : `<div class="redirect-notice">Signing in to: <strong>${escapeHtml(redirectHostname)}</strong></div>`;
+
+  const scopesHtml = params.grantedScopes?.length
+    ? `<div class="scopes">This will allow access to:<ul>${params.grantedScopes
+        .map(
+          (s) =>
+            `<li><code>${escapeHtml(s.name)}</code>${s.description ? ` — ${escapeHtml(s.description)}` : ""}</li>`,
+        )
+        .join("")}</ul></div>`
+    : "";
 
   const logoHtml = logoUrlSafe ? `<img class="logo" src="${logoUrlSafe}" alt="${appName}" />` : "";
 
@@ -133,6 +145,8 @@ export function renderAuthorizePage(identity: IdentityConfig, params: AuthorizeP
     .error { background: #fef2f2; color: #991b1b; padding: 0.75rem; border-radius: 8px; margin-bottom: 1rem; font-size: 0.85rem; }
     .redirect-notice { font-size: 0.85rem; color: #555; margin-bottom: 1rem; }
     .redirect-notice.warn { background: #fffbeb; color: #92400e; padding: 0.75rem; border-radius: 8px; }
+    .scopes { font-size: 0.85rem; color: #555; margin-bottom: 1rem; }
+    .scopes ul { margin: 0.25rem 0 0 1.25rem; }
   </style>
 </head>
 <body>
@@ -141,6 +155,7 @@ export function renderAuthorizePage(identity: IdentityConfig, params: AuthorizeP
     <h1>${appName}</h1>
     ${errorHtml}
     ${redirectNoticeHtml}
+    ${scopesHtml}
     <form method="POST" action="/authorize">
       ${hiddenInputs}
 ${fieldInputs}

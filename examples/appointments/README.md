@@ -12,19 +12,23 @@ in-memory storage and an email + verification-code identity.
 > requires `/.well-known/oauth-authorization-server` to resolve at the domain root. See the
 > [deploy guide](../../docs/deploy.md) for details.
 
-> **Import path:** `server.ts` imports from `../../src/index.js` (repo-relative) because
-> this example is dogfooded by the kit's own test suite. A real project imports from the
+> **Import path:** `server.ts` imports from `../../src/index.js` (repo-relative) for in-repo
+> development — this example is dogfooded by the kit's own test suite. A real project imports from the
 > published package instead — `import { createMcpServer, ... } from "mcp-oauth-kit"` — see
 > [`docs/how-to-use.md`](../../docs/how-to-use.md) for the copy-pasteable version.
 
 ## Run on Node
 
-`@hono/node-server` and a TypeScript runner (`tsx` or `ts-node`) are dev extras — not bundled
-with `mcp-oauth-kit`. Install them first:
+`@hono/node-server` and `tsx` aren't installed by the kit's repo. To try the example in-repo,
+install them without saving:
 
 ```bash
-npm install --save-dev @hono/node-server tsx
+npm install --no-save @hono/node-server tsx
 ```
+
+In your own project `@hono/node-server` is a **runtime** dependency
+(`npm install @hono/node-server`); `tsx` is optional (Node 22.18+ runs `.ts` directly, or
+write plain `.js`).
 
 Then run the included entry point:
 

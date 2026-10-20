@@ -11,7 +11,7 @@ import {
 import { sha256Hex, randomToken } from "../crypto.js";
 import { fetchClientIdMetadata } from "./cimd.js";
 
-/** TTL constants in seconds. */
+/** TTL constants in seconds. Access/refresh lifetimes are defaults — see `tokenTtl`. */
 const TTL = {
   CLIENT: 30 * 24 * 60 * 60, // 30 days
   AUTH_CODE: 5 * 60, // 5 minutes
@@ -29,6 +29,16 @@ export interface TokenPair {
   /** Access-token lifetime in seconds. */
   expiresIn: number;
   scope: string[];
+  /** The user the pair was issued to (for audit hooks — never sent to the client). */
+  userId: string;
+}
+
+/** Access/refresh token lifetimes. Omit a field to keep its default. */
+export interface TokenTtlConfig {
+  /** Access-token lifetime in seconds. Default: 3600 (1 hour). */
+  accessTokenSeconds?: number;
+  /** Refresh-token (and token-family) lifetime in seconds. Default: 7776000 (90 days). */
+  refreshTokenSeconds?: number;
 }
 
 /** Stored client record. */
@@ -52,6 +62,16 @@ interface AuthCodeData {
   resource: string;
   scope: string[];
   /** Issue time (ms) — defense-in-depth expiry check independent of the KV TTL. */
+  createdAt: number;
+}
+
+/**
+ * What a redeemed code's record is replaced with: a replay of the code (RFC 6749 §4.1.2:
+ * "SHOULD revoke … all tokens previously issued based on that authorization code") finds
+ * this marker and revokes the family it minted.
+ */
+interface UsedAuthCode {
+  usedFamilyId: string;
   createdAt: number;
 }
 
@@ -84,6 +104,8 @@ export interface OAuthProviderConfig {
   baseUrl: string;
   /** Injectable clock for deterministic TTL/expiry in tests. */
   now?: () => number;
+  /** Override the access/refresh token lifetimes. */
+  tokenTtl?: TokenTtlConfig;
   /**
    * Resolve unregistered HTTPS client_ids as OAuth Client ID Metadata Documents
    * (MCP 2026-07-28, deprecating Dynamic Client Registration). Off by default —
@@ -124,7 +146,8 @@ export interface OAuthProvider {
     token: string,
   ): Promise<{ userId: string; clientId: string; scopes: string[] } | null>;
   refresh(input: { refreshToken: string; clientId: string }): Promise<TokenPair>;
-  revoke(input: { token: string; clientId: string }): Promise<void>;
+  /** Resolves with the revoked token's userId, or `{}` when the token was unknown. */
+  revoke(input: { token: string; clientId: string }): Promise<{ userId?: string }>;
   /**
    * Cheap check that `clientId` is registered and `redirectUri` is one it registered.
    * Lets the authorize route validate the client BEFORE running identity.verify, so a
@@ -148,6 +171,10 @@ async function verifyPkceS256(codeVerifier: string, codeChallenge: string): Prom
 export function createOAuthProvider(config: OAuthProviderConfig): OAuthProvider {
   const { storage, scopes, baseUrl, allowClientIdMetadataDocuments = false } = config;
   const now = config.now ?? (() => Date.now());
+  const accessTtl = config.tokenTtl?.accessTokenSeconds ?? TTL.ACCESS_TOKEN;
+  const refreshTtl = config.tokenTtl?.refreshTokenSeconds ?? TTL.REFRESH_TOKEN;
+  // The family record gates every access token (verifyAccessToken), so it must outlive both.
+  const familyTtl = Math.max(accessTtl, refreshTtl);
 
   const supportedScopes = scopes.map((s) => s.name);
   const defaultScopes = scopes.filter((s) => s.default).map((s) => s.name);
@@ -251,23 +278,44 @@ export function createOAuthProvider(config: OAuthProviderConfig): OAuthProvider 
 
     await Promise.all([
       storage.put(accessTokenKey(accessHash), JSON.stringify(accessData), {
-        ttlSeconds: TTL.ACCESS_TOKEN,
+        ttlSeconds: accessTtl,
       }),
       storage.put(refreshTokenKey(refreshHash), JSON.stringify(refreshData), {
-        ttlSeconds: TTL.REFRESH_TOKEN,
+        ttlSeconds: refreshTtl,
       }),
-      // The family record outlives the access token, so it tracks the live refresh token.
+      // The family record outlives both tokens: it tracks the live refresh token, and its
+      // absence revokes every access token in the lineage (see verifyAccessToken).
       storage.put(tokenFamilyKey(familyId), JSON.stringify(family), {
-        ttlSeconds: TTL.REFRESH_TOKEN,
+        ttlSeconds: familyTtl,
       }),
     ]);
 
     return {
       accessToken,
       refreshToken,
-      expiresIn: TTL.ACCESS_TOKEN,
+      expiresIn: accessTtl,
       scope,
+      userId,
     };
+  }
+
+  /**
+   * Revoke a whole token lineage. Deleting the family record is what matters —
+   * verifyAccessToken rejects any access token whose family is gone, including older
+   * generations that are still inside their own TTL. The live pair is deleted too.
+   */
+  async function revokeFamily(familyId: string): Promise<void> {
+    const familyRaw = await storage.get(tokenFamilyKey(familyId));
+    const family = familyRaw ? (JSON.parse(familyRaw) as TokenFamily) : null;
+    await Promise.all([
+      storage.delete(tokenFamilyKey(familyId)),
+      ...(family
+        ? [
+            storage.delete(accessTokenKey(family.accessHash)),
+            storage.delete(refreshTokenKey(family.refreshHash)),
+          ]
+        : []),
+    ]);
   }
 
   return {
@@ -305,6 +353,7 @@ export function createOAuthProvider(config: OAuthProviderConfig): OAuthProvider 
       }
 
       const code = randomToken();
+      const codeHash = await sha256Hex(code);
       const codeData: AuthCodeData = {
         userId: input.userId,
         clientId: input.clientId,
@@ -314,7 +363,7 @@ export function createOAuthProvider(config: OAuthProviderConfig): OAuthProvider 
         scope: normalizeScopes(input.scope),
         createdAt: now(),
       };
-      await storage.put(authCodeKey(code), JSON.stringify(codeData), {
+      await storage.put(authCodeKey(codeHash), JSON.stringify(codeData), {
         ttlSeconds: TTL.AUTH_CODE,
       });
       return { code };
@@ -330,52 +379,70 @@ export function createOAuthProvider(config: OAuthProviderConfig): OAuthProvider 
       // RFC 8707 resource validation (audit fix).
       assertResource(input.resource);
 
-      const raw = await storage.get(authCodeKey(input.code));
+      const codeKey = authCodeKey(await sha256Hex(input.code));
+      const raw = await storage.get(codeKey);
       if (!raw) {
         throw new Error("Invalid or expired authorization code");
       }
-      const codeData = JSON.parse(raw) as AuthCodeData;
+      const stored = JSON.parse(raw) as AuthCodeData | UsedAuthCode;
 
-      // Defense-in-depth expiry (independent of KV TTL); consume the stale code.
-      if (isExpired(codeData.createdAt, TTL.AUTH_CODE)) {
-        await storage.delete(authCodeKey(input.code));
+      // A replay of an already-redeemed code: revoke what it minted (RFC 6749 §4.1.2).
+      if ("usedFamilyId" in stored) {
+        await revokeFamily(stored.usedFamilyId);
+        await storage.delete(codeKey);
         throw new Error("Invalid or expired authorization code");
+      }
+      const codeData = stored;
+
+      // Any failed redemption consumes the code — an attacker holding a stolen code gets
+      // one guess at the verifier/client, not five minutes of them.
+      const reject = async (message: string): Promise<never> => {
+        await storage.delete(codeKey);
+        throw new Error(message);
+      };
+
+      // Defense-in-depth expiry (independent of KV TTL).
+      if (isExpired(codeData.createdAt, TTL.AUTH_CODE)) {
+        return reject("Invalid or expired authorization code");
       }
 
       if (codeData.clientId !== input.clientId) {
-        throw new Error("Client ID mismatch");
+        return reject("Client ID mismatch");
       }
 
       // RFC 6749 §4.1.3: redirect_uri is required and must match the authorization request.
       if (!input.redirectUri) {
-        throw new Error("redirect_uri is required");
+        return reject("redirect_uri is required");
       }
       if (codeData.redirectUri !== input.redirectUri) {
-        throw new Error("Redirect URI mismatch");
+        return reject("Redirect URI mismatch");
       }
 
       // RFC 8707: only enforce when the code was resource-bound at authorize time.
       if (codeData.resource && input.resource !== codeData.resource) {
-        throw new Error("Resource mismatch");
+        return reject("Resource mismatch");
       }
 
       // PKCE S256 — recompute and compare.
       const valid = await verifyPkceS256(input.codeVerifier, codeData.codeChallenge);
       if (!valid) {
-        throw new Error("PKCE verification failed");
+        return reject("PKCE verification failed");
       }
 
-      // Single-use: delete the code before issuing tokens.
-      await storage.delete(authCodeKey(input.code));
+      // Single-use: swap the code for a used-marker before issuing tokens, so a replay is
+      // detectable for the rest of the code's lifetime.
+      const familyId = crypto.randomUUID();
+      const used: UsedAuthCode = { usedFamilyId: familyId, createdAt: codeData.createdAt };
+      await storage.put(codeKey, JSON.stringify(used), { ttlSeconds: TTL.AUTH_CODE });
 
-      // Fresh family for a fresh authorization. Always bind to the resource
-      // authorized at auth time — no escalation.
+      // Always bind to this server's resource — a code authorized without an explicit
+      // `resource` still yields audience-bound tokens.
       return issueTokenPair(
         codeData.userId,
         codeData.clientId,
-        codeData.resource,
+        codeData.resource || expectedResource,
         codeData.scope,
-        crypto.randomUUID(),
+        familyId,
       );
     },
 
@@ -387,13 +454,18 @@ export function createOAuthProvider(config: OAuthProviderConfig): OAuthProvider 
       }
       const tokenData = JSON.parse(raw) as TokenData;
       // Defense-in-depth expiry — never honour a token past its TTL even if KV did.
-      if (isExpired(tokenData.createdAt, TTL.ACCESS_TOKEN)) {
+      if (isExpired(tokenData.createdAt, accessTtl)) {
         return null;
       }
       // Defense-in-depth audience check (RFC 8707 §2) — redundant with issue-time binding
       // under normal operation, but guards against a KV namespace ever being shared across
       // two servers built with this kit.
-      if (tokenData.resource && tokenData.resource !== expectedResource) {
+      if (tokenData.resource !== expectedResource) {
+        return null;
+      }
+      // A revoked lineage (reuse detection, /revoke, code replay) deletes the family record;
+      // that must kill every access token in it, not just the newest one.
+      if (!tokenData.familyId || (await storage.get(tokenFamilyKey(tokenData.familyId))) === null) {
         return null;
       }
       return { userId: tokenData.userId, clientId: tokenData.clientId, scopes: tokenData.scope };
@@ -410,7 +482,7 @@ export function createOAuthProvider(config: OAuthProviderConfig): OAuthProvider 
       if (tokenData.clientId !== input.clientId) {
         throw new Error("Client ID mismatch");
       }
-      if (isExpired(tokenData.createdAt, TTL.REFRESH_TOKEN)) {
+      if (isExpired(tokenData.createdAt, refreshTtl)) {
         throw new Error("Invalid or expired refresh token");
       }
 
@@ -426,11 +498,7 @@ export function createOAuthProvider(config: OAuthProviderConfig): OAuthProvider 
       }
       const family = JSON.parse(familyRaw) as TokenFamily;
       if (family.refreshHash !== refreshHash) {
-        await Promise.all([
-          storage.delete(accessTokenKey(family.accessHash)),
-          storage.delete(refreshTokenKey(family.refreshHash)),
-          storage.delete(tokenFamilyKey(familyId)),
-        ]);
+        await revokeFamily(familyId);
         throw new Error("Invalid or expired refresh token (reuse detected)");
       }
 
@@ -440,7 +508,7 @@ export function createOAuthProvider(config: OAuthProviderConfig): OAuthProvider 
       return issueTokenPair(
         tokenData.userId,
         tokenData.clientId,
-        tokenData.resource,
+        tokenData.resource || expectedResource,
         tokenData.scope,
         familyId,
       );
@@ -478,11 +546,13 @@ export function createOAuthProvider(config: OAuthProviderConfig): OAuthProvider 
         await storage.delete(accessTokenKey(refreshData.pairHash));
       }
 
-      // Tear down the family record so the lineage can't be rotated after revocation.
+      // Tear down the family record: the lineage can't be rotated, and every access token
+      // in it — older generations included — fails verifyAccessToken from now on.
       const familyId = accessData?.familyId ?? refreshData?.familyId;
       if (familyId) {
         await storage.delete(tokenFamilyKey(familyId));
       }
+      return { userId: accessData?.userId ?? refreshData?.userId };
     },
   };
 }

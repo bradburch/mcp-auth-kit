@@ -36,9 +36,17 @@ MCP client ──discovery──▶ /.well-known/*
 npm install mcp-oauth-kit
 # peer dependencies (not bundled):
 npm install hono @modelcontextprotocol/server zod
+# Node adapter (a runtime dependency, not a dev one):
+npm install @hono/node-server
 ```
 
-Node **22+** is required.
+Node **22+** is required, and your project must be ESM (`"type": "module"`).
+
+> **TypeScript is optional.** The snippets below are TypeScript, but everything except the
+> type annotations (`type` imports, `: Foo` annotations) is plain ESM JavaScript: name the file
+> `server.js` and run `node server.js`. `defineTool` is only a typing helper — in JS you can
+> pass the tool objects directly. Node 22.18+ / 23.6+ can also run `.ts` files directly via
+> built-in type stripping, so `tsx` is optional there too.
 
 ## 2. A minimal server
 
@@ -48,7 +56,7 @@ fine for local development.
 ```ts
 // server.ts
 import { z } from "zod";
-import { createMcpServer, createMemoryStorage } from "mcp-oauth-kit";
+import { createMcpServer, createMemoryStorage, defineTool } from "mcp-oauth-kit";
 
 export const app = createMcpServer({
   baseUrl: "http://localhost:3000", // MUST match where the server is actually reachable
@@ -60,14 +68,12 @@ export const app = createMcpServer({
     verify: async (fields) => (fields.email.endsWith("@example.com") ? fields.email : null),
   },
   tools: [
-    {
+    defineTool({
       name: "whoami",
       description: "Return the caller's user id.",
       inputSchema: z.object({}),
-      handler: async (_input, ctx) => ({
-        content: [{ type: "text", text: `You are ${ctx.userId}` }],
-      }),
-    },
+      handler: async (_input, ctx) => `You are ${ctx.userId}`, // strings become text content
+    }),
   ],
 });
 ```
@@ -80,7 +86,8 @@ export const app = createMcpServer({
 ## 3. Run it locally
 
 ```bash
-npm install --save-dev @hono/node-server tsx
+npm install @hono/node-server   # runtime dependency
+npm install --save-dev tsx      # optional: Node 22.18+ runs .ts directly, or use .js files
 ```
 
 ```ts
@@ -99,12 +106,34 @@ curl -s http://localhost:3000/.well-known/oauth-authorization-server | jq
 
 A complete runnable example lives in [`examples/appointments/`](../examples/appointments/).
 
+### Alongside your own routes
+
+The returned app is plain Hono, so you can mount it inside your own app at the root:
+
+```ts
+import { Hono } from "hono";
+import { createMcpServer } from "mcp-oauth-kit";
+
+const app = new Hono();
+app.get("/", (c) => c.text("Hello"));
+app.route("/", createMcpServer({/* ... */}));
+```
+
+The kit owns `/.well-known/oauth-authorization-server`, `/.well-known/oauth-protected-resource`
+(and `/.well-known/oauth-protected-resource/mcp`), `/register`, `/authorize`, `/token`,
+`/revoke`, and `/mcp` — keep your routes off those. The kit's login creates **no browser
+session or cookie** (it only hands an OAuth code to the MCP client), so a web UI of your own
+needs its own authentication.
+
 ## 4. Define your identity provider
 
-`identity.verify(fields)` is the single integration point for authentication. The kit renders
-a login form from `identity.fields`, collects the values, and hands them to `verify`. Return a
-**stable user id** (the same string every time for a given user — it keys rate limits and
-shows up as `ctx.userId`) or `null` to reject.
+`identity.verify(fields, { request, ip })` is the single integration point for
+authentication. The kit renders a login form from `identity.fields`, collects the values, and
+hands them to `verify`. Return a **stable user id** (the same string every time for a given
+user — it keys rate limits and shows up as `ctx.userId`) or `null` to reject. Values are
+strings (missing fields are `""`); non-password fields are trimmed, password fields are passed
+verbatim and never refilled on a failed attempt. The form also lists the scopes being granted,
+using each scope's `description`.
 
 ```ts
 identity: {
@@ -123,6 +152,11 @@ identity: {
 
 The kit never stores credentials — it only stores the issued tokens (hashed) keyed to the
 user id you return.
+
+> **Add per-account lockout for short codes.** The kit rate-limits `/authorize` per IP only
+> (`ipAuthorizePerHour`); an attacker rotating IPs can still guess a 6-digit code. Count
+> failures per account inside `verify` — the second argument gives you the raw `request` and
+> the trusted client `ip` (from `ipExtractor`) to key on.
 
 ### Bringing your own OAuth UI / SSO instead of `identity`
 
@@ -236,9 +270,12 @@ defineTool({
   inputSchema: z.object({ slot: z.string() }),
   mutating: {
     // Phase 1 — validate + describe. NO side effect here. `slot` is typed from inputSchema.
+    // `summary` is shown before confirming and passed to onMutation after — keep it
+    // tense-neutral ("Book 09:00", not "Booked 09:00").
     preview: async ({ slot }) => ({ summary: `Book ${slot}`, data: { slot } }),
-    // Phase 2 — runs only after confirm_request with the token from phase 1.
-    // `data` is typed from preview's return value.
+    // Phase 2 — runs only after confirm_request with the token from phase 1, up to 5 minutes
+    // later. `data` is typed from preview's return value but arrives JSON round-tripped (no
+    // Date/Map/BigInt) — and re-check anything preview checked (is the slot still free?).
     execute: async ({ slot }, ctx) => {
       // Replace with your real persistence — this illustrates where the side effect goes.
       console.log(`booking ${slot} for ${ctx.userId}`);
@@ -275,6 +312,19 @@ Call `confirm_request` with that token:
 }
 ```
 
+What `confirm_request` returns:
+
+- **Success** — whatever `execute` returned, shaped like a handler result (a string becomes one
+  text block, other values become JSON text; a value that can't be serialized becomes
+  `{"success":true}` since the side effect already happened).
+- **Replay** (same `idempotencyKey` and same `confirmationToken`, within 10 minutes) — the
+  identical cached result; `execute` does not run again and `onMutation` doesn't fire.
+- **Refusal** — `isError: true` with text `{"success":false,"error":"..."}`: the token expired
+  or was already used, the request is still being processed (retry shortly), or the
+  `idempotencyKey` was already used for a different confirmation (use a new key).
+- **Thrown error in `execute`** — `isError: true` with the `ToolError` message, or a generic
+  "Tool execution failed" for anything else.
+
 `confirm_request` is registered only when at least one mutating tool is granted to the
 caller; the mutating tools themselves are always listed regardless of grant — see the
 README's scope-gating section for why. So if none of your mutating tools are granted to a
@@ -290,6 +340,8 @@ to verify your server. It uses PKCE (S256).
 > headers matching the body, plus a `_meta` envelope in `params`. Send
 > `accept: application/json, text/event-stream`. A client that instead opens with a 2025-era
 > `initialize` still works via the SDK's stateless fallback (answered as a one-event SSE stream).
+> `Mcp-Name` is only needed for `tools/call` — a `tools/list` request sends just
+> `Mcp-Method: tools/list`.
 
 ```bash
 BASE=http://localhost:3000
@@ -417,6 +469,21 @@ A `callTool` for a tool whose scope you don't hold throws `UnauthorizedError` af
 has started a step-up authorization for that scope — finish it the same way
 (`finishAuth`, reconnect) and retry the call.
 
+Things the minimal provider above glosses over:
+
+- **`state`.** Generate an unguessable `state` per authorization, and check the value on the
+  redirect matches before calling `finishAuth` (CSRF protection on your callback).
+- **Requesting scopes up front.** The 401 challenge only advertises default scopes. To get a
+  non-default scope on the first login, start the flow yourself with
+  `auth(authProvider, { serverUrl, scope: "account:read write" })`.
+- **Step-up isn't additive.** The new token carries only the scopes requested in that round,
+  so request the **union** of every scope you need, not just the missing one.
+- **`redirectToAuthorization` can fire mid tool-call**, on a 403 step-up — not only during
+  `connect`. Your UI must handle it at any point.
+- **Persist discovery state.** If the callback leg runs in a different process from the one
+  that started the flow, persist what `saveDiscoveryState` receives and return it from
+  `discoveryState()` — otherwise `finishAuth` throws `AuthorizationServerMismatchError`.
+
 ## 8. Observe what happens (hooks)
 
 All hooks are optional and fire-and-forget except `onMutation`, which is awaited.
@@ -424,12 +491,16 @@ All hooks are optional and fire-and-forget except `onMutation`, which is awaited
 ```ts
 hooks: {
   onToolCall: async (e) => log.info("tool", e.toolName, "by", e.userId),
-  onAudit: async (e) => log.info("oauth", e.event, e.clientId), // registered / issued / refreshed / revoked
-  onMutation: async (e) => auditLedger.write(e), // awaited — durable side effect
+  onAudit: async (e) => log.info("oauth", e.event, e.clientId, e.userId), // registered / issued / refreshed / revoked
+  onMutation: async (e) => auditLedger.write(e), // awaited — { summary, input, data, result, idempotencyKey, ... }
+  onToolError: async (e) => { if (!e.expected) alert(e.error); }, // expected = a ToolError rejection
 }
 ```
 
-A throwing hook never fails the request.
+A throwing hook never fails the request. `onMutation` fires only for two-phase (mutating)
+tools, and not when a confirm is replayed — log plain tools' side effects in their handler. On
+Cloudflare Workers, pass the execution context (`app.fetch(req, env, ctx)`) so the
+fire-and-forget hooks are kept alive with `waitUntil` after the response is sent.
 
 ## 9. Going to production — checklist
 
@@ -439,12 +510,16 @@ A throwing hook never fails the request.
 - [ ] **Serve at the origin root** over HTTPS, with `baseUrl` set to that exact public URL.
 - [ ] **Set the trusted client-IP source if you're _not_ behind Cloudflare.** Pass
       `ipExtractor` so per-IP rate limits can't be bypassed with a spoofed header (see the
-      README's RateLimitConfig section).
+      README's RateLimitConfig section; on bare Node use the socket peer address).
+- [ ] **Add per-account lockout in `verify`** if your credential is short or guessable — the
+      kit only limits per IP.
+- [ ] **List browser origins in `allowedOrigins`** if a browser-based client calls `/mcp`
+      (`localhost` and `127.0.0.1` are different origins).
 - [ ] **Decide on `allowClientIdMetadataDocuments`.** Off by default. Turning it on lets
       unregistered HTTPS `client_id`s authorize by hosting a metadata document — an
       outbound-fetch surface at authorization time. Leave it off unless you have clients
       that need it.
-- [ ] **Tune `rateLimits`** for your traffic (defaults: 50 tool calls/user/hr, 10
+- [ ] **Tune `rateLimits`** for your traffic (defaults: 50 `/mcp` requests/user/hr, 10
       authorize/IP/hr, 30 token+register+revoke/IP/hr). During local client development raise
       `ipAuthorizePerHour` — every OAuth round trip, including a step-up, costs one attempt.
 - [ ] **Pick your deployment adapter** ([deploy.md](deploy.md): Workers, Node, Lambda, Vercel).

@@ -3,12 +3,13 @@
 // POST /token, POST /revoke onto a Hono app.
 import type { Context, Hono } from "hono";
 import type { OAuthProvider } from "./provider.js";
-import type { IdentityConfig, ObservabilityHooks } from "../config.js";
+import type { IdentityConfig, ObservabilityHooks, ScopeConfig } from "../config.js";
 import { renderAuthorizePage, type AuthorizePageParams } from "../identity/page.js";
 
 import type { RateLimiter } from "../rate-limit.js";
 import { extractClientIp } from "../http/client-ip.js";
 import { readCappedBody } from "../http/body-limit.js";
+import { secondsUntilHourWindowResets, waitUntilFor, type WaitUntil } from "../http/wait-until.js";
 import { hasFragment, isAllowedRedirectUriScheme } from "./redirect-uri.js";
 
 // ─── Security header constants ───────────────────────────────────────────────
@@ -75,7 +76,11 @@ async function readBodyParsed(req: Request): Promise<Record<string, string> | Re
  */
 function authorizePageParams(
   oauthParams: Record<string, string>,
-  extra?: { error?: string; prefill?: Record<string, string> },
+  extra?: {
+    error?: string;
+    prefill?: Record<string, string>;
+    grantedScopes?: AuthorizePageParams["grantedScopes"];
+  },
 ): AuthorizePageParams {
   return {
     response_type: oauthParams.response_type ?? "code",
@@ -88,6 +93,7 @@ function authorizePageParams(
     scope: oauthParams.scope ?? "",
     error: extra?.error,
     prefill: extra?.prefill,
+    grantedScopes: extra?.grantedScopes,
   };
 }
 
@@ -120,23 +126,31 @@ export interface OAuthRouteDeps {
    * Extract the trusted client IP for per-IP rate limiting. Defaults to
    * {@link extractClientIp} (CF-Connecting-IP → X-Forwarded-For first hop).
    * Override this off-Cloudflare so a spoofable header can't reset rate-limit buckets.
+   * `env` is the Hono `c.env` — on `@hono/node-server` it carries the socket
+   * (`env.incoming.socket.remoteAddress`).
    */
-  ipExtractor?: (req: Request) => string;
+  ipExtractor?: (req: Request, env: unknown) => string;
+  /** The server's scopes — used to show what the login page is granting, with descriptions. */
+  scopes?: ScopeConfig[];
 }
 
 /**
  * Fire an onAudit event (fire-and-forget — errors are swallowed so a misbehaving
- * hook never fails the OAuth request).
+ * hook never fails the OAuth request). Handed to the runtime's `waitUntil` when there is
+ * one, so a Worker doesn't cancel the hook once the response is sent.
  */
-async function fireAudit(
+function fireAudit(
   hooks: ObservabilityHooks | undefined,
   event: Parameters<NonNullable<ObservabilityHooks["onAudit"]>>[0],
-): Promise<void> {
-  try {
-    await hooks?.onAudit?.(event);
-  } catch {
-    // Intentionally swallowed — hook errors must not surface to the client.
-  }
+  waitUntil: WaitUntil | undefined,
+): void {
+  if (!hooks?.onAudit) return;
+  const p = Promise.resolve()
+    .then(() => hooks.onAudit?.(event))
+    .catch(() => {
+      // Intentionally swallowed — hook errors must not surface to the client.
+    });
+  waitUntil?.(p);
 }
 
 /**
@@ -149,9 +163,17 @@ async function fireAudit(
  */
 export function mountOAuthRoutes(
   app: Hono,
-  { provider, identity, baseUrl, hooks, rateLimiter, ipExtractor }: OAuthRouteDeps,
+  { provider, identity, baseUrl, hooks, rateLimiter, ipExtractor, scopes }: OAuthRouteDeps,
 ): void {
-  const clientIp = ipExtractor ?? extractClientIp;
+  const clientIp = (c: Context) =>
+    ipExtractor ? ipExtractor(c.req.raw, c.env) : extractClientIp(c.req.raw);
+
+  /** The scopes this request would be granted, for display on the login page. */
+  const grantedScopes = (scope: string) =>
+    provider.normalizeScopes(scope ? scope.split(" ") : []).map((name) => ({
+      name,
+      description: scopes?.find((s) => s.name === name)?.description,
+    }));
 
   /**
    * Apply a per-IP rate-limit bucket. Returns a 429 Response (naming the `RateLimitConfig`
@@ -164,10 +186,10 @@ export function mountOAuthRoutes(
     bucket: (rl: RateLimiter, ip: string) => Promise<boolean>,
   ): Promise<Response | null> => {
     if (!rateLimiter) return null;
-    const ok = await bucket(rateLimiter, clientIp(c.req.raw));
-    return ok
-      ? null
-      : c.json(oauthError("temporarily_unavailable", `rate limit exceeded (${limit})`), 429);
+    const ok = await bucket(rateLimiter, clientIp(c));
+    if (ok) return null;
+    c.header("Retry-After", String(secondsUntilHourWindowResets()));
+    return c.json(oauthError("temporarily_unavailable", `rate limit exceeded (${limit})`), 429);
   };
 
   // ── POST /register ─────────────────────────────────────────────────────────
@@ -238,10 +260,7 @@ export function mountOAuthRoutes(
         clientName: typeof body.client_name === "string" ? body.client_name : undefined,
         applicationType: applicationType as "web" | "native" | undefined,
       });
-      void fireAudit(hooks, {
-        event: "client_registered",
-        clientId: result.clientId,
-      });
+      fireAudit(hooks, { event: "client_registered", clientId: result.clientId }, waitUntilFor(c));
       // RFC 7591 §3.2.1: echo client_id, redirect_uris, client_id_issued_at,
       // and token_endpoint_auth_method in the registration response.
       return c.json(
@@ -267,7 +286,7 @@ export function mountOAuthRoutes(
 
   // ── GET /authorize ─────────────────────────────────────────────────────────
 
-  app.get("/authorize", (c) => {
+  app.get("/authorize", async (c) => {
     c.header("Content-Security-Policy", AUTHORIZE_CSP);
 
     const oauthParams = extractOAuthParams(
@@ -294,7 +313,17 @@ export function mountOAuthRoutes(
     if (!identity) {
       return c.text("No identity provider configured", 400);
     }
-    return c.html(renderAuthorizePage(identity, authorizePageParams(oauthParams)));
+    // Don't render a login form on this origin for a client/redirect pair that could never
+    // receive a code — it would only lend the real domain to a phishing link.
+    if (!(await provider.validateClientRedirect(clientId, redirectUri))) {
+      return c.text("Unknown client_id or unregistered redirect_uri", 400);
+    }
+    return c.html(
+      renderAuthorizePage(
+        identity,
+        authorizePageParams(oauthParams, { grantedScopes: grantedScopes(oauthParams.scope ?? "") }),
+      ),
+    );
   });
 
   // ── POST /authorize ────────────────────────────────────────────────────────
@@ -321,6 +350,7 @@ export function mountOAuthRoutes(
       state,
       code_challenge: codeChallenge,
       code_challenge_method: codeChallengeMethod,
+      response_type: responseType,
       resource,
       scope,
     } = oauthParams;
@@ -330,15 +360,23 @@ export function mountOAuthRoutes(
     if (!clientId || !redirectUri || !codeChallenge) {
       return c.json(oauthError("invalid_request", "Missing required OAuth parameters"), 400);
     }
+    if (responseType !== "code") {
+      return c.json(
+        oauthError("unsupported_response_type", 'Only response_type "code" is supported'),
+        400,
+      );
+    }
     if (codeChallengeMethod !== "S256") {
       return c.text("Unsupported code_challenge_method. Only S256 is supported.", 400);
     }
 
-    // Collect identity field values from form body.
+    // Collect identity field values from form body. Passwords are passed through verbatim —
+    // trimming would silently change a secret with leading/trailing spaces.
     const fields = identity?.fields ?? [];
     const identityFields: Record<string, string> = {};
     for (const f of fields) {
-      identityFields[f.name] = getString(f.name);
+      identityFields[f.name] =
+        f.type === "password" ? String(formData[f.name] ?? "") : getString(f.name);
     }
 
     function renderError(error: string) {
@@ -348,7 +386,11 @@ export function mountOAuthRoutes(
       return c.html(
         renderAuthorizePage(
           identity,
-          authorizePageParams(oauthParams, { error, prefill: identityFields }),
+          authorizePageParams(oauthParams, {
+            error,
+            prefill: identityFields,
+            grantedScopes: grantedScopes(scope),
+          }),
         ),
         401,
       );
@@ -370,7 +412,10 @@ export function mountOAuthRoutes(
       return renderError(INVALID);
     }
 
-    const userId = await identity.verify(identityFields);
+    const userId = await identity.verify(identityFields, {
+      request: c.req.raw,
+      ip: clientIp(c),
+    });
     if (userId === null) {
       return renderError(INVALID);
     }
@@ -438,7 +483,11 @@ export function mountOAuthRoutes(
           resource,
         });
 
-        void fireAudit(hooks, { event: "token_issued", clientId });
+        fireAudit(
+          hooks,
+          { event: "token_issued", clientId, userId: tokens.userId },
+          waitUntilFor(c),
+        );
         return c.json(tokenPairToResponse(tokens));
       } else if (grantType === "refresh_token") {
         const refreshToken = body.refresh_token ?? "";
@@ -448,7 +497,11 @@ export function mountOAuthRoutes(
         }
 
         const tokens = await provider.refresh({ refreshToken, clientId });
-        void fireAudit(hooks, { event: "token_refreshed", clientId });
+        fireAudit(
+          hooks,
+          { event: "token_refreshed", clientId, userId: tokens.userId },
+          waitUntilFor(c),
+        );
         return c.json(tokenPairToResponse(tokens));
       } else {
         return c.json(
@@ -489,8 +542,8 @@ export function mountOAuthRoutes(
     }
 
     try {
-      await provider.revoke({ token, clientId });
-      void fireAudit(hooks, { event: "token_revoked", clientId });
+      const { userId } = await provider.revoke({ token, clientId });
+      fireAudit(hooks, { event: "token_revoked", clientId, userId }, waitUntilFor(c));
       // RFC 7009 §2.2: successful revocation always returns 200.
       return c.body(null, 200);
     } catch (e) {

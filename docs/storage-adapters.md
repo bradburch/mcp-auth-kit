@@ -26,6 +26,22 @@ All values are strings. Serialization (JSON, etc.) is the caller's responsibilit
 
 `createCloudflareKvStorage` accepts any object satisfying `KVNamespaceLike` (also exported) — the subset of the Cloudflare KV API the kit uses — so it works in tests without a real KV binding.
 
+### Cloudflare KV caveats
+
+Workers KV is fine for many deployments, but know its limits:
+
+- **Eventually consistent, up to ~60 seconds across locations.** A rotated refresh token, a
+  redeemed authorization code, a revoked token family, or a consumed confirmation token can
+  still look valid to a request served from another location until the change propagates.
+  Rate-limit counters are effectively **per location** for the same reason.
+- **About one write per second per key.** The per-user rate-limit counter key is written on
+  every `POST /mcp` request, so a single user sending bursts can hit KV's per-key write limit.
+- **Free plan: 1,000 writes/day.** Every MCP request writes a counter, and every OAuth flow
+  writes several records, so the free plan is exhausted quickly.
+
+For strict single-use and rate-limit guarantees, implement `KvLike` on a Durable Object
+(strongly consistent, single-threaded per object) instead of KV.
+
 ## Example adapters
 
 The snippets below show how to wrap common backends. They are **examples, not shipped dependencies** — `mcp-oauth-kit` does not install or import Redis, DynamoDB, or Postgres. Copy, adapt, and own them in your own project.

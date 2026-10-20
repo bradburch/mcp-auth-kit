@@ -19,6 +19,7 @@ import { tools } from "./tools.js";
 
 interface Env {
   KV: KVNamespace;
+  BASE_URL: string;
 }
 
 // Bindings only arrive via `env` in an ES-module Worker, so the app is built on the first
@@ -26,9 +27,9 @@ interface Env {
 let app: ReturnType<typeof createMcpServer> | undefined;
 
 export default {
-  fetch: (req: Request, env: Env) => {
+  fetch: (req: Request, env: Env, ctx: ExecutionContext) => {
     app ??= createMcpServer({
-      baseUrl: "https://mcp.example.com", // http://localhost:8787 works under `wrangler dev`
+      baseUrl: env.BASE_URL, // from [vars]; override with http://localhost:8787 for `wrangler dev`
       storage: createCloudflareKvStorage(env.KV),
       scopes: [{ name: "account:read", default: true }],
       identity: {
@@ -37,26 +38,43 @@ export default {
       },
       tools,
     });
-    return app.fetch(req, env);
+    // Pass ctx so fire-and-forget hooks (onToolCall, onToolError, onAudit) run under
+    // waitUntil instead of being cancelled once the response is sent.
+    return app.fetch(req, env, ctx);
   },
 } satisfies ExportedHandler<Env>;
 ```
 
-No `nodejs_compat` flag is needed.
+Tools reach the bindings through `ctx.env` — typed `unknown`, so cast it:
+`const { KV } = ctx.env as Env;`.
+
+No `nodejs_compat` flag is needed. The bundle is about 236 KiB gzipped (172 KiB with
+`--minify`), mostly zod and the MCP SDK.
 
 `wrangler.toml` — bind your KV namespace:
 
 ```toml
 name = "my-mcp-server"
 main = "src/index.ts"
-compatibility_date = "2024-09-23"
+compatibility_date = "2026-10-01" # use a current date
+
+[vars]
+BASE_URL = "https://mcp.example.com"
 
 [[kv_namespaces]]
 binding = "KV"
 id = "<your-kv-namespace-id>"
 ```
 
-Storage: `createCloudflareKvStorage` — built in, no extra install.
+For local development, `wrangler dev --local --var BASE_URL:http://localhost:8787` works with
+a placeholder KV `id`. Local KV — including rate-limit counters — persists in `.wrangler/state`
+across restarts; delete that directory (or point `--persist-to` somewhere disposable) if you
+lock yourself out while iterating.
+
+Storage: `createCloudflareKvStorage` — built in, no extra install. Workers KV is eventually
+consistent and limits writes per key; read the
+[KV caveats](storage-adapters.md#cloudflare-kv-caveats) before relying on it for strict
+single-use or rate-limit guarantees.
 
 ## Node.js (`@hono/node-server`)
 
@@ -89,6 +107,22 @@ serve({ fetch: app.fetch, port: 3000 }, (info) => {
   console.log(`Listening on http://localhost:${info.port}`);
 });
 ```
+
+**Set `ipExtractor`.** The default reads `CF-Connecting-IP` / `X-Forwarded-For`, which any
+client can send to a bare Node server. With no proxy in front, use the socket's peer address
+(Hono's `c.env` on `@hono/node-server` is `HttpBindings`):
+
+```ts
+import type { HttpBindings } from "@hono/node-server";
+
+createMcpServer({
+  // ...
+  ipExtractor: (_req, env) => (env as HttpBindings).incoming.socket.remoteAddress ?? "unknown",
+});
+```
+
+Behind a reverse proxy the peer is the proxy, so read the header it sets instead — but only
+one it always overwrites (see the README's "Trusted client IP").
 
 ## AWS Lambda (`hono/aws-lambda`)
 
