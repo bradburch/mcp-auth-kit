@@ -235,7 +235,7 @@ export interface RateLimitConfig {
   userPerHour?: number;
   /** Max OAuth authorize attempts per IP per hour (brute-force guard). Default: 10. */
   ipAuthorizePerHour?: number;
-  /** Max token-endpoint requests per IP per hour. Default: 30. */
+  /** Max requests per IP per hour to `/token`, `/register`, and `/revoke`. Default: 30. */
   ipTokenPerHour?: number;
 }
 
@@ -243,9 +243,9 @@ export interface RateLimitConfig {
 export interface McpServerConfig {
   /** Public base URL of this server (used to build OAuth redirect URIs). */
   baseUrl: string;
-  /** Server name reported to MCP clients in `initialize`. Default: "mcp-oauth-kit". */
+  /** Server name reported to MCP clients (`serverInfo`). Default: "mcp-oauth-kit". */
   name?: string;
-  /** Server version reported to MCP clients in `initialize`. Default: the kit's version. */
+  /** Server version reported to MCP clients (`serverInfo`). Default: the kit's version. */
   version?: string;
   storage: KvLike;
   scopes: ScopeConfig[];

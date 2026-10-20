@@ -106,6 +106,17 @@ All notable changes to this project are documented here. The format is based on
 - `OAuthProvider.verifyAccessToken` also returns the token's `clientId`, which is now passed
   to the SDK's `authInfo` (it was always `""`).
 
+### Documentation
+
+- How-to: `node run.ts` now works as written (imports `./server.ts`; `tsc` settings noted); the
+  `curl` walkthrough requests the `write` scope and adds preview → `confirm_request` steps; the
+  bring-your-own-`/authorize` example is complete (rate limiter, `OAuthError` handling,
+  `POST /mcp` wiring).
+- README: quick start runs with `node server.ts`; Public API lists match the exports
+  (`ToolErrorPhase`, `McpRequestDeps` fields, `ToolContext.waitUntil`); endpoint table adds
+  `/.well-known/oauth-protected-resource/mcp`; `identity`, `name`/`version`, and the
+  `skipLibCheck: false` setup are described accurately.
+
 ## [0.3.0] - 2026-09-27
 
 ### Added

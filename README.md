@@ -19,7 +19,8 @@ npm install hono @modelcontextprotocol/server zod
 ```
 
 TypeScript projects that type-check libraries (`skipLibCheck: false`) also need
-`@types/node` — the SDK's published types reference `Buffer`.
+`@types/node` **and** `"types": ["node"]` in `tsconfig.json` — the SDK's published types
+reference `Buffer`, and current TypeScript no longer includes `@types/*` packages unless listed.
 
 Node **22+** is required, and your project must be ESM (`"type": "module"` in
 `package.json`) — the package publishes an ESM-only `exports` map with no `require` condition.
@@ -34,7 +35,7 @@ npm install @hono/node-server   # Node adapter; see docs/deploy.md for Workers, 
 ```
 
 ```ts
-// server.ts — run with `npx tsx server.ts`
+// server.ts — run with `node server.ts` (Node 22.18+; or save as server.js)
 import { serve } from "@hono/node-server";
 import { z } from "zod";
 import { createMcpServer, createMemoryStorage, defineTool } from "mcp-oauth-kit";
@@ -88,7 +89,7 @@ const app = createMcpServer({
 });
 
 // app is a Hono instance — wrap it in your runtime's adapter.
-serve({ fetch: app.fetch, port: 3000 });
+serve({ fetch: app.fetch, port: 3000 }, () => console.log("listening on http://localhost:3000"));
 ```
 
 Point an MCP client at `http://localhost:3000/mcp` and it will run the OAuth flow against the
@@ -96,7 +97,9 @@ built-in login page.
 
 **Plain JavaScript works too.** Nothing above needs TypeScript: save it as `server.js` and run
 `node server.js`. `defineTool` is only a typing helper — in JS you can pass the tool objects
-directly. (Node 22.18+ / 23.6+ can also run the `.ts` file as-is via built-in type stripping.)
+directly. (Node 22.18+ / 23.6+ runs the `.ts` file as-is via built-in type stripping; a relative
+import of another `.ts` file must then spell the `.ts` extension — see the
+[how-to guide](https://github.com/bradburch/mcp-auth-kit/blob/main/docs/how-to-use.md#3-run-it-locally).)
 
 ### Adding your own routes
 
@@ -122,20 +125,20 @@ See [`examples/appointments/server.ts`](https://github.com/bradburch/mcp-auth-ki
 
 `createMcpServer(config: McpServerConfig)` accepts:
 
-| Field                            | Type                                     | Required | Description                                                                                                                                                                                                                                                                                                       |
-| -------------------------------- | ---------------------------------------- | -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `baseUrl`                        | `string`                                 | Yes      | Public base URL of this server (used in OAuth discovery and redirect URIs). Must be `https://` unless the hostname is `localhost`/`127.0.0.1` — the server throws at construction time otherwise.                                                                                                                 |
-| `name` / `version`               | `string`                                 | No       | Server identity reported to MCP clients on `initialize`. Defaults to `mcp-oauth-kit` / the kit version.                                                                                                                                                                                                           |
-| `storage`                        | `KvLike`                                 | Yes      | Key-value store for tokens, rate-limit counters, and idempotency records.                                                                                                                                                                                                                                         |
-| `scopes`                         | `ScopeConfig[]`                          | Yes      | OAuth scopes the server advertises.                                                                                                                                                                                                                                                                               |
-| `identity`                       | `IdentityConfig`                         | No       | Built-in login-form identity provider. Omit to use a custom provider.                                                                                                                                                                                                                                             |
-| `tools`                          | `Array<ToolDef \| MutatingToolDef>`      | Yes      | Tool definitions registered on the MCP server.                                                                                                                                                                                                                                                                    |
-| `rateLimits`                     | `RateLimitConfig`                        | No       | Per-hour thresholds for tool calls and OAuth endpoints.                                                                                                                                                                                                                                                           |
-| `hooks`                          | `ObservabilityHooks`                     | No       | Async callbacks for tool calls, OAuth lifecycle events, and mutation audit.                                                                                                                                                                                                                                       |
-| `ipExtractor`                    | `(req: Request, env: unknown) => string` | No       | Override how the trusted client IP is derived for per-IP rate limiting (see below). `env` is Hono's `c.env`.                                                                                                                                                                                                      |
-| `tokenTtl`                       | `TokenTtlConfig`                         | No       | Override token lifetimes: `{ accessTokenSeconds?, refreshTokenSeconds? }` (defaults 3600 / 7776000 — 1 hour / 90 days).                                                                                                                                                                                           |
-| `allowClientIdMetadataDocuments` | `boolean`                                | No       | Resolve unregistered `https://` client_ids as [Client ID Metadata Documents](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization) instead of requiring Dynamic Client Registration. Off by default (see "OAuth / PKCE client flow" below).                                               |
-| `allowedOrigins`                 | `string[]`                               | No       | Exact-match allowlist for the browser `Origin` header on `POST /mcp` (DNS-rebinding protection). Requests with no `Origin` header are always allowed; a request WITH one is rejected unless it's in this list. `http://localhost:3000` and `http://127.0.0.1:3000` are different origins — list each one you use. |
+| Field                            | Type                                     | Required | Description                                                                                                                                                                                                                                                                                                                 |
+| -------------------------------- | ---------------------------------------- | -------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `baseUrl`                        | `string`                                 | Yes      | Public base URL of this server (used in OAuth discovery and redirect URIs). Must be `https://` unless the hostname is `localhost`/`127.0.0.1` — the server throws at construction time otherwise.                                                                                                                           |
+| `name` / `version`               | `string`                                 | No       | Server identity sent to MCP clients as `serverInfo` — in every result's `_meta` (2026-07-28), and in `initialize` for 2025-era clients. Defaults to `mcp-oauth-kit` / the kit version.                                                                                                                                      |
+| `storage`                        | `KvLike`                                 | Yes      | Key-value store for tokens, rate-limit counters, and idempotency records.                                                                                                                                                                                                                                                   |
+| `scopes`                         | `ScopeConfig[]`                          | Yes      | OAuth scopes the server advertises.                                                                                                                                                                                                                                                                                         |
+| `identity`                       | `IdentityConfig`                         | No       | Built-in login-form identity provider. Without it `GET /authorize` answers `400`, so omit it only when you compose the low-level pieces with your own `/authorize` (see the [how-to guide §4](https://github.com/bradburch/mcp-auth-kit/blob/main/docs/how-to-use.md#bringing-your-own-oauth-ui--sso-instead-of-identity)). |
+| `tools`                          | `Array<ToolDef \| MutatingToolDef>`      | Yes      | Tool definitions registered on the MCP server.                                                                                                                                                                                                                                                                              |
+| `rateLimits`                     | `RateLimitConfig`                        | No       | Per-hour thresholds for tool calls and OAuth endpoints.                                                                                                                                                                                                                                                                     |
+| `hooks`                          | `ObservabilityHooks`                     | No       | Async callbacks for tool calls, OAuth lifecycle events, and mutation audit.                                                                                                                                                                                                                                                 |
+| `ipExtractor`                    | `(req: Request, env: unknown) => string` | No       | Override how the trusted client IP is derived for per-IP rate limiting (see below). `env` is Hono's `c.env`.                                                                                                                                                                                                                |
+| `tokenTtl`                       | `TokenTtlConfig`                         | No       | Override token lifetimes: `{ accessTokenSeconds?, refreshTokenSeconds? }` (defaults 3600 / 7776000 — 1 hour / 90 days).                                                                                                                                                                                                     |
+| `allowClientIdMetadataDocuments` | `boolean`                                | No       | Resolve unregistered `https://` client_ids as [Client ID Metadata Documents](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization) instead of requiring Dynamic Client Registration. Off by default (see "OAuth / PKCE client flow" below).                                                         |
+| `allowedOrigins`                 | `string[]`                               | No       | Exact-match allowlist for the browser `Origin` header on `POST /mcp` (DNS-rebinding protection). Requests with no `Origin` header are always allowed; a request WITH one is rejected unless it's in this list. `http://localhost:3000` and `http://127.0.0.1:3000` are different origins — list each one you use.           |
 
 ### `ScopeConfig`
 
@@ -264,6 +267,9 @@ interface ToolContext {
   // own type.
   env: unknown;
   hooks: ObservabilityHooks;
+  // The runtime's waitUntil on Cloudflare Workers / edge (undefined on Node): hand it a
+  // promise to keep background work alive after the response is sent.
+  waitUntil?: (promise: Promise<unknown>) => void;
 }
 ```
 
@@ -327,18 +333,19 @@ z.object({
 
 The Hono app returned by `createMcpServer` must be served at the **origin root** (i.e. `https://mcp.example.com/`). RFC 8414 requires `/.well-known/oauth-authorization-server` to resolve at the domain root, and the protected resource is advertised as `${baseUrl}/mcp` — mounting under a path prefix would break discovery and token validation for spec-compliant clients.
 
-| Method   | Path                                      | Description                                             |
-| -------- | ----------------------------------------- | ------------------------------------------------------- |
-| `GET`    | `/.well-known/oauth-authorization-server` | RFC 8414 authorization server metadata                  |
-| `GET`    | `/.well-known/oauth-protected-resource`   | RFC 9728 protected resource metadata                    |
-| `POST`   | `/register`                               | Dynamic Client Registration (RFC 7591)                  |
-| `GET`    | `/authorize`                              | Render built-in login form                              |
-| `POST`   | `/authorize`                              | Process login, issue auth code, 302 redirect            |
-| `POST`   | `/token`                                  | Token exchange (`authorization_code` + `refresh_token`) |
-| `POST`   | `/revoke`                                 | Token revocation (RFC 7009)                             |
-| `POST`   | `/mcp`                                    | MCP transport (stateless streamable-HTTP)               |
-| `GET`    | `/mcp`                                    | 405 — stateless mode, no GET stream                     |
-| `DELETE` | `/mcp`                                    | 405 — stateless mode, no sessions                       |
+| Method   | Path                                        | Description                                             |
+| -------- | ------------------------------------------- | ------------------------------------------------------- |
+| `GET`    | `/.well-known/oauth-authorization-server`   | RFC 8414 authorization server metadata                  |
+| `GET`    | `/.well-known/oauth-protected-resource`     | RFC 9728 protected resource metadata                    |
+| `GET`    | `/.well-known/oauth-protected-resource/mcp` | Same metadata at the RFC 9728 path-suffixed location    |
+| `POST`   | `/register`                                 | Dynamic Client Registration (RFC 7591)                  |
+| `GET`    | `/authorize`                                | Render built-in login form                              |
+| `POST`   | `/authorize`                                | Process login, issue auth code, 302 redirect            |
+| `POST`   | `/token`                                    | Token exchange (`authorization_code` + `refresh_token`) |
+| `POST`   | `/revoke`                                   | Token revocation (RFC 7009)                             |
+| `POST`   | `/mcp`                                      | MCP transport (stateless streamable-HTTP)               |
+| `GET`    | `/mcp`                                      | 405 — stateless mode, no GET stream                     |
+| `DELETE` | `/mcp`                                      | 405 — stateless mode, no sessions                       |
 
 ### Request body limit
 
@@ -384,13 +391,11 @@ See [docs/deploy.md](https://github.com/bradburch/mcp-auth-kit/blob/main/docs/de
 - `createMcpServer(config)` — factory; returns a Hono app
 - `createMemoryStorage()` — in-memory `KvLike` for tests
 - `createCloudflareKvStorage(kv)` — wraps a Cloudflare KV namespace
-- `registerMutatingTool(server, tool, ctx)` — low-level registration helper
-- `registerConfirmTool(server, ctx, mutatingTools)` — low-level confirm registration
 - `defineTool(tool)` — typed tool helper (infers handler input from `inputSchema`)
 - `ToolError` — throw to reject a tool call with a client-visible message
 - `isMutating(t)` — type guard: `true` when `t` is a `MutatingToolDef`
 
-Types: `McpServerConfig`, `ScopeConfig`, `IdentityField`, `IdentityConfig`, `Branding`, `ObservabilityHooks`, `ToolContext`, `ToolDef`, `MutatingToolDef`, `PreviewResult`, `RateLimitConfig`, `KvLike`, `KVNamespaceLike`, `AuthorizePageParams`
+Types: `McpServerConfig`, `ScopeConfig`, `IdentityField`, `IdentityConfig`, `Branding`, `ObservabilityHooks`, `ToolContext`, `ToolDef`, `MutatingToolDef`, `PreviewResult`, `RateLimitConfig`, `ToolErrorPhase`, `KvLike`, `KVNamespaceLike`, `AuthorizePageParams`
 
 ### Advanced / low-level API
 
@@ -402,10 +407,22 @@ mounts the routes.
 
 - `OAuthError(code, message, status = 400)` — what the built-in provider throws; `/token` and `/revoke` answer with its `code` and `status`. Throw it from a custom `OAuthProvider` — any other error from `/token` becomes `invalid_grant` (400) with its message.
 - `createOAuthProvider(config)` — build the OAuth provider independently. `OAuthProviderConfig` fields: `storage`, `scopes`, `baseUrl`, optional `now?: () => number` (injectable clock for deterministic testing), optional `tokenTtl?: TokenTtlConfig`, and optional `allowClientIdMetadataDocuments?: boolean` (see the Config reference table above).
-- `mountOAuthRoutes(app, deps)` — mount `/register`, `/authorize`, `/token`, `/revoke` onto an existing Hono app.
-- `mountDiscovery(app, deps)` — mount `/.well-known/oauth-authorization-server` and `/.well-known/oauth-protected-resource`.
+- `mountOAuthRoutes(app, deps)` — mount `/register`, `/authorize`, `/token`, `/revoke` onto an existing Hono app. `OAuthRouteDeps`: `provider`, `baseUrl`, and optional `identity`, `hooks`, `rateLimiter` (omit it and these endpoints are unthrottled), `ipExtractor`, `scopes`.
+- `mountDiscovery(app, deps)` — mount `/.well-known/oauth-authorization-server` and `/.well-known/oauth-protected-resource` (plus its `/mcp` sub-path). `DiscoveryDeps`: `baseUrl`, `scopes`, optional `clientIdMetadataDocumentsSupported`.
 - `createRateLimiter({ storage, config? })` — build the rate limiter independently.
-- `handleMcpRequest(req, deps)` — handle a single `POST /mcp` request; returns a `Promise<Response>`.
+- `handleMcpRequest(req, deps)` — handle a single `POST /mcp` request; returns a `Promise<Response>`. `McpRequestDeps` fields (see the [how-to guide §4](https://github.com/bradburch/mcp-auth-kit/blob/main/docs/how-to-use.md#bringing-your-own-oauth-ui--sso-instead-of-identity) for a full example):
+  - `provider` — the `OAuthProvider` that verifies Bearer tokens.
+  - `rateLimiter` — the `RateLimiter` enforcing `userPerHour`.
+  - `storage` — the `KvLike` passed to tools as `ctx.storage` (and used by two-phase confirm).
+  - `tools` — the `ToolDef` / `MutatingToolDef` array.
+  - `baseUrl` — the server's public base URL (used in the `401`/`403` challenges).
+  - `serverName` / `serverVersion` — the `serverInfo` reported to clients.
+  - `env` — the runtime env (Hono's `c.env`), exposed as `ctx.env`.
+  - `hooks` — `ObservabilityHooks` (`{}` for none).
+  - `defaultScopes` — scope names hinted in the `401` `WWW-Authenticate` challenge.
+  - `allowedOrigins?` — `Origin` allowlist (default `[]`: any request with an `Origin` is rejected).
+  - `waitUntil?` — the runtime's `waitUntil` for fire-and-forget hooks; omit on Node.
+- `registerMutatingTool(server, tool, ctx)` / `registerConfirmTool(server, ctx, mutatingTools)` — register a two-phase tool / the shared `confirm_request` tool on your own `McpServer` (what `handleMcpRequest` does per request).
 - `renderAuthorizePage(identity, params)` — render the built-in login form HTML (use when building a custom `/authorize` handler).
 
 Types: `OAuthProvider`, `OAuthProviderConfig`, `TokenPair`, `TokenTtlConfig`, `OAuthRouteDeps`, `DiscoveryDeps`, `RateLimiter`, `McpRequestDeps`
