@@ -352,6 +352,71 @@ curl -s -X POST $BASE/mcp \
 In a real MCP client (Claude, an IDE plugin, etc.) you just point it at `http://localhost:3000`
 and it performs steps (a)–(e) for you.
 
+### Connect with the TypeScript SDK client
+
+`@modelcontextprotocol/client` runs discovery, registration, PKCE, token exchange and
+scope step-up itself; you supply an `OAuthClientProvider` that stores state and sends the
+user to the login page. A minimal in-memory provider (a real app opens `url` in a browser and
+receives the redirect on `redirectUrl`):
+
+```ts
+import {
+  Client,
+  StreamableHTTPClientTransport,
+  UnauthorizedError,
+  type OAuthClientProvider,
+} from "@modelcontextprotocol/client";
+
+const redirectUrl = "http://localhost:9999/cb";
+let state: Record<string, any> = {};
+let callback: URLSearchParams | undefined;
+
+const authProvider: OAuthClientProvider = {
+  redirectUrl,
+  clientMetadata: { client_name: "my-client", redirect_uris: [redirectUrl] },
+  clientInformation: () => state.client,
+  saveClientInformation: (c) => void (state.client = c),
+  tokens: () => state.tokens,
+  saveTokens: (t) => void (state.tokens = t),
+  codeVerifier: () => state.verifier,
+  saveCodeVerifier: (v) => void (state.verifier = v),
+  discoveryState: () => state.discovery,
+  saveDiscoveryState: (d) => void (state.discovery = d),
+  redirectToAuthorization: async (url) => {
+    // Open `url` for the user; when the browser lands on redirectUrl, keep its query params.
+    callback = await openBrowserAndWaitForRedirect(url); // your UI
+  },
+};
+
+const connect = async () => {
+  const transport = new StreamableHTTPClientTransport(new URL("http://localhost:3000/mcp"), {
+    authProvider,
+  });
+  // "auto" negotiates 2026-07-28 via server/discover; omit for the 2025 handshake.
+  const client = new Client(
+    { name: "my-client", version: "1.0.0" },
+    {
+      versionNegotiation: { mode: "auto" },
+    },
+  );
+  try {
+    await client.connect(transport);
+  } catch (e) {
+    if (!(e instanceof UnauthorizedError)) throw e;
+    await transport.finishAuth(callback!); // redeem the code, then reconnect
+    return connect();
+  }
+  return client;
+};
+
+const client = await connect();
+console.log(await client.listTools());
+```
+
+A `callTool` for a tool whose scope you don't hold throws `UnauthorizedError` after the SDK
+has started a step-up authorization for that scope — finish it the same way
+(`finishAuth`, reconnect) and retry the call.
+
 ## 8. Observe what happens (hooks)
 
 All hooks are optional and fire-and-forget except `onMutation`, which is awaited.
@@ -380,7 +445,8 @@ A throwing hook never fails the request.
       outbound-fetch surface at authorization time. Leave it off unless you have clients
       that need it.
 - [ ] **Tune `rateLimits`** for your traffic (defaults: 50 tool calls/user/hr, 10
-      authorize/IP/hr, 30 token+register+revoke/IP/hr).
+      authorize/IP/hr, 30 token+register+revoke/IP/hr). During local client development raise
+      `ipAuthorizePerHour` — every OAuth round trip, including a step-up, costs one attempt.
 - [ ] **Pick your deployment adapter** ([deploy.md](deploy.md): Workers, Node, Lambda, Vercel).
 - [ ] **Wire `hooks`** to your logging/audit pipeline.
 - [ ] Review the security model and documented limitations in [SECURITY.md](../SECURITY.md).

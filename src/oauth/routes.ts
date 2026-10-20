@@ -154,23 +154,27 @@ export function mountOAuthRoutes(
   const clientIp = ipExtractor ?? extractClientIp;
 
   /**
-   * Apply a per-IP rate-limit bucket. Returns a 429 Response when the limit is exhausted,
-   * or null to proceed. No-op when no rate limiter is configured.
+   * Apply a per-IP rate-limit bucket. Returns a 429 Response (naming the `RateLimitConfig`
+   * key that was exhausted) when the limit is hit, or null to proceed. No-op when no rate
+   * limiter is configured.
    */
   const ipRateLimited = async (
     c: Context,
+    limit: "ipAuthorizePerHour" | "ipTokenPerHour",
     bucket: (rl: RateLimiter, ip: string) => Promise<boolean>,
   ): Promise<Response | null> => {
     if (!rateLimiter) return null;
     const ok = await bucket(rateLimiter, clientIp(c.req.raw));
-    return ok ? null : c.json(oauthError("temporarily_unavailable", "rate limit exceeded"), 429);
+    return ok
+      ? null
+      : c.json(oauthError("temporarily_unavailable", `rate limit exceeded (${limit})`), 429);
   };
 
   // ── POST /register ─────────────────────────────────────────────────────────
 
   app.post("/register", async (c) => {
     // Per-IP rate limit: unauthenticated DCR is a storage-exhaustion DoS vector.
-    const limited = await ipRateLimited(c, (rl, ip) => rl.checkIpToken(ip));
+    const limited = await ipRateLimited(c, "ipTokenPerHour", (rl, ip) => rl.checkIpToken(ip));
     if (limited) return limited;
 
     const capped = await readCappedBody(c.req.raw);
@@ -299,7 +303,9 @@ export function mountOAuthRoutes(
     c.header("Content-Security-Policy", AUTHORIZE_CSP);
 
     // Per-IP rate limit: brute-force guard on credential submissions.
-    const limited = await ipRateLimited(c, (rl, ip) => rl.checkIpAuthorize(ip));
+    const limited = await ipRateLimited(c, "ipAuthorizePerHour", (rl, ip) =>
+      rl.checkIpAuthorize(ip),
+    );
     if (limited) return limited;
 
     const formData = await readBodyParsed(c.req.raw);
@@ -404,7 +410,7 @@ export function mountOAuthRoutes(
     c.header("Pragma", TOKEN_CACHE_HEADERS["Pragma"]);
 
     // Per-IP rate limit on the token endpoint.
-    const limited = await ipRateLimited(c, (rl, ip) => rl.checkIpToken(ip));
+    const limited = await ipRateLimited(c, "ipTokenPerHour", (rl, ip) => rl.checkIpToken(ip));
     if (limited) return limited;
 
     const body = await readBodyParsed(c.req.raw);
@@ -470,7 +476,7 @@ export function mountOAuthRoutes(
 
   app.post("/revoke", async (c) => {
     // Per-IP rate limit: unauthenticated endpoint, guard against abuse.
-    const limited = await ipRateLimited(c, (rl, ip) => rl.checkIpToken(ip));
+    const limited = await ipRateLimited(c, "ipTokenPerHour", (rl, ip) => rl.checkIpToken(ip));
     if (limited) return limited;
 
     const body = await readBodyParsed(c.req.raw);

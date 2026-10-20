@@ -10,6 +10,8 @@ All request bodies — OAuth endpoints and the MCP transport — are capped at *
 
 Use `createCloudflareKvStorage` to wrap your KV namespace binding.
 
+`KVNamespace` / `ExportedHandler` come from `@cloudflare/workers-types` (or `wrangler types`).
+
 ```ts
 // src/index.ts
 import { createMcpServer, createCloudflareKvStorage } from "mcp-oauth-kit";
@@ -19,13 +21,14 @@ interface Env {
   KV: KVNamespace;
 }
 
+// Bindings only arrive via `env` in an ES-module Worker, so the app is built on the first
+// request and reused for the rest of the isolate's life (env bindings don't change within it).
+let app: ReturnType<typeof createMcpServer> | undefined;
+
 export default {
-  // Bindings only arrive via this `env` parameter in an ES-module Worker — build the app
-  // per-request so `createCloudflareKvStorage` gets the real KV namespace, not a
-  // module-scope value that doesn't exist yet at module-evaluation time.
   fetch: (req: Request, env: Env) => {
-    const app = createMcpServer({
-      baseUrl: "https://mcp.example.com",
+    app ??= createMcpServer({
+      baseUrl: "https://mcp.example.com", // http://localhost:8787 works under `wrangler dev`
       storage: createCloudflareKvStorage(env.KV),
       scopes: [{ name: "account:read", default: true }],
       identity: {
@@ -38,6 +41,8 @@ export default {
   },
 } satisfies ExportedHandler<Env>;
 ```
+
+No `nodejs_compat` flag is needed.
 
 `wrangler.toml` — bind your KV namespace:
 
