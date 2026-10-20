@@ -2,7 +2,7 @@
 import { describe, it, expect } from "vitest";
 import { createMcpServer } from "../../src/server.js";
 import { createMemoryStorage } from "../../src/storage/memory.js";
-import { pkce } from "../helpers.js";
+import { getTokenPair } from "../helpers.js";
 import { z } from "zod";
 
 function makeApp() {
@@ -25,56 +25,6 @@ function makeApp() {
       },
     ],
   });
-}
-
-/** Register a client and return the full OAuth token response (access + refresh). */
-async function getTokenPair(
-  app: ReturnType<typeof makeApp>,
-): Promise<{ accessToken: string; refreshToken: string; clientId: string }> {
-  const reg = await (
-    await app.request("/register", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ redirect_uris: ["https://app/cb"] }),
-    })
-  ).json();
-  const clientId = reg.client_id as string;
-  const { challenge, verifier } = await pkce();
-  const authRes = await app.request("/authorize", {
-    method: "POST",
-    redirect: "manual",
-    headers: { "content-type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      response_type: "code",
-      client_id: clientId,
-      redirect_uri: "https://app/cb",
-      code_challenge: challenge,
-      code_challenge_method: "S256",
-      resource: "https://example.test/mcp",
-      email: "a@b.c",
-    }).toString(),
-  });
-  const location = authRes.headers.get("location")!;
-  const code = new URL(location).searchParams.get("code")!;
-  const tok = await (
-    await app.request("/token", {
-      method: "POST",
-      headers: { "content-type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({
-        grant_type: "authorization_code",
-        code,
-        client_id: clientId,
-        redirect_uri: "https://app/cb",
-        code_verifier: verifier,
-        resource: "https://example.test/mcp",
-      }).toString(),
-    })
-  ).json();
-  return {
-    accessToken: tok.access_token as string,
-    refreshToken: tok.refresh_token as string,
-    clientId,
-  };
 }
 
 /** POST /revoke helper */

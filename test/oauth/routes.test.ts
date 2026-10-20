@@ -321,3 +321,101 @@ describe("GET /authorize — redirect URI display", () => {
     expect(res.headers.get("content-security-policy")).toContain("frame-ancestors 'none'");
   });
 });
+
+describe("OAuth error mapping on /token and /revoke", () => {
+  const RESOURCE = `${baseUrl}/mcp`;
+
+  async function setup(
+    provider = createOAuthProvider({ storage: createMemoryStorage(), scopes, baseUrl }),
+  ) {
+    const app = new Hono();
+    mountOAuthRoutes(app, { provider, baseUrl });
+    const { clientId } = await provider.registerClient({ redirectUris: ["https://app/cb"] });
+    const { challenge, verifier } = await pkce();
+    const { code } = await provider.issueAuthCode({
+      clientId,
+      redirectUri: "https://app/cb",
+      codeChallenge: challenge,
+      scope: [],
+      userId: "u",
+      resource: RESOURCE,
+    });
+    const token = (fields: Record<string, string>) =>
+      app.request("/token", {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          grant_type: "authorization_code",
+          code,
+          client_id: clientId,
+          redirect_uri: "https://app/cb",
+          code_verifier: verifier,
+          resource: RESOURCE,
+          ...fields,
+        }).toString(),
+      });
+    return { app, clientId, token };
+  }
+
+  const errorOf = async (res: Response) => [res.status, (await res.json()).error];
+
+  it("maps each provider failure to its OAuth code and status", async () => {
+    expect(await errorOf(await (await setup()).token({ code: "nope" }))).toEqual([
+      400,
+      "invalid_grant",
+    ]);
+    expect(await errorOf(await (await setup()).token({ client_id: "other" }))).toEqual([
+      401,
+      "invalid_client",
+    ]);
+    expect(await errorOf(await (await setup()).token({ resource: "https://x/mcp" }))).toEqual([
+      400,
+      "invalid_target",
+    ]);
+    expect(await errorOf(await (await setup()).token({ code_verifier: "w".repeat(43) }))).toEqual([
+      400,
+      "invalid_grant",
+    ]);
+  });
+
+  it("maps a refresh by the wrong client to 401 invalid_client, and revoke to unauthorized_client", async () => {
+    const { app, token } = await setup();
+    const { refresh_token } = await (await token({})).json();
+    const refresh = await app.request("/token", {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        grant_type: "refresh_token",
+        refresh_token,
+        client_id: "other",
+      }).toString(),
+    });
+    expect(await errorOf(refresh)).toEqual([401, "invalid_client"]);
+    const revoke = await app.request("/revoke", {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ token: refresh_token, client_id: "other" }).toString(),
+    });
+    expect(revoke.status).toBe(401);
+    expect(await revoke.json()).toEqual({
+      error: "unauthorized_client",
+      error_description: "Token was issued to a different client",
+    });
+  });
+
+  it("maps a custom provider's plain Error to invalid_grant", async () => {
+    const base = createOAuthProvider({ storage: createMemoryStorage(), scopes, baseUrl });
+    const { token } = await setup({
+      ...base,
+      exchangeCode: async () => {
+        throw new Error("backend says no");
+      },
+    });
+    const res = await token({});
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({
+      error: "invalid_grant",
+      error_description: "backend says no",
+    });
+  });
+});

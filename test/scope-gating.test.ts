@@ -35,12 +35,8 @@ async function listRegisteredTools(
     env: undefined,
     hooks: {},
   };
-  registerTools(server, tools, ctx, grantedScopes);
-  // Ask the server's internal registry (the SDK exposes tools as a Map).
-  // Access via the public `listTools` capability if available, otherwise inspect.
-  // We can ask via the transport — but it's simpler to inspect the names that were
-  // registered, since McpServer registers them on a Handler map we can iterate.
-  // Simplest approach: use JSON-RPC over WebStandardStreamableHTTPServerTransport.
+  registerTools(server, tools, ctx);
+  // List what was registered by asking the server over a JSON-RPC transport.
   const { WebStandardStreamableHTTPServerTransport } = await import("@modelcontextprotocol/server");
   const transport = new WebStandardStreamableHTTPServerTransport({
     sessionIdGenerator: undefined,

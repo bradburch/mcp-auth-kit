@@ -73,7 +73,11 @@ All notable changes to this project are documented here. The format is based on
   only when `execute` actually ran.
 - **Breaking (custom providers only):** `OAuthProvider.revoke` now resolves to
   `{ userId?: string }` (was `void`), and `TokenPair` has a required `userId`. Code that
-  implements `OAuthProvider` itself for `mountOAuthRoutes` must return these.
+  implements `OAuthProvider` itself for `mountOAuthRoutes` must return these. `/token` and
+  `/revoke` now map errors by type, not message text: throw the new exported `OAuthError`
+  (`new OAuthError("invalid_client", "…", 401)`) — any other error from `/token` becomes
+  `invalid_grant` (400), and only an `unauthorized_client` `OAuthError` gets a 401 from
+  `/revoke`.
 - **Upgrade notes.** Records written before the upgrade that are briefly affected:
   - In-flight authorization codes and pending confirmations (≤5 min) are keyed by hash now,
     so they aren't found — the user signs in or previews again.

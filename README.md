@@ -400,6 +400,7 @@ directly. **The origin-root requirement above still applies** — none of these 
 pieces lift it; RFC 8414 discovery breaks under a path prefix regardless of which API layer
 mounts the routes.
 
+- `OAuthError(code, message, status = 400)` — what the built-in provider throws; `/token` and `/revoke` answer with its `code` and `status`. Throw it from a custom `OAuthProvider` — any other error from `/token` becomes `invalid_grant` (400) with its message.
 - `createOAuthProvider(config)` — build the OAuth provider independently. `OAuthProviderConfig` fields: `storage`, `scopes`, `baseUrl`, optional `now?: () => number` (injectable clock for deterministic testing), optional `tokenTtl?: TokenTtlConfig`, and optional `allowClientIdMetadataDocuments?: boolean` (see the Config reference table above).
 - `mountOAuthRoutes(app, deps)` — mount `/register`, `/authorize`, `/token`, `/revoke` onto an existing Hono app.
 - `mountDiscovery(app, deps)` — mount `/.well-known/oauth-authorization-server` and `/.well-known/oauth-protected-resource`.

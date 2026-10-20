@@ -9,7 +9,7 @@ import {
   ToolError,
   type McpServerConfig,
 } from "../src/index.js";
-import { getToken, callTool, readRpc } from "./helpers.js";
+import { getToken, callTool, readRpc, toolText as text } from "./helpers.js";
 
 const base = {
   baseUrl: "https://example.test",
@@ -279,8 +279,6 @@ describe("review fixes", () => {
       }),
     ],
   });
-
-  const text = (r: unknown) => (r as { content: Array<{ text: string }> }).content[0].text;
 
   it("sanitizes a handler return that cannot be serialized, and reports it via onToolError", async () => {
     const token = await getToken(app);

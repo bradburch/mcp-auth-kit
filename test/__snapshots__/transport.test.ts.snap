@@ -1,0 +1,8 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`POST /mcp — modern request with an unparseable body > still gets the SDK's own JSON parse error 1`] = `
+{
+  "body": "{"jsonrpc":"2.0","error":{"code":-32700,"message":"Parse error: Invalid JSON"},"id":null}",
+  "status": 400,
+}
+`;

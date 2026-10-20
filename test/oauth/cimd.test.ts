@@ -3,7 +3,14 @@ import { fetchClientIdMetadata } from "../../src/oauth/cimd.js";
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.useRealTimers();
 });
+
+/** Run a fetch that hangs until the 3s timeout fires, on fake timers (no real wait). */
+async function pastTimeout<T>(p: Promise<T>): Promise<T> {
+  await vi.advanceTimersByTimeAsync(3000);
+  return p;
+}
 
 describe("fetchClientIdMetadata", () => {
   it("returns the parsed metadata for a valid document", async () => {
@@ -237,13 +244,9 @@ describe("fetchClientIdMetadata", () => {
       vi.fn(async () => new Response(mockStream, { status: 200 }) as Response),
     );
 
-    // Should timeout after 3000ms and return null without hanging forever.
-    const result = await Promise.race([
-      fetchClientIdMetadata(clientId),
-      new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error("Test timeout: fetchClientIdMetadata hung")), 5000),
-      ),
-    ]);
+    // Should time out after 3000ms and return null without hanging forever.
+    vi.useFakeTimers();
+    const result = await pastTimeout(fetchClientIdMetadata(clientId));
 
     expect(result).toBeNull();
     // The abort controller should have cancelled the reader.
@@ -270,11 +273,9 @@ describe("fetchClientIdMetadata", () => {
       vi.fn(async () => new Response(mockStream, { status: 200 }) as Response),
     );
 
-    // Should timeout after 3000ms and return null, NOT throw.
-    const result = await Promise.race([
-      fetchClientIdMetadata(clientId),
-      new Promise<never>((_, reject) => setTimeout(() => reject(new Error("Test timeout")), 5000)),
-    ]);
+    // Should time out after 3000ms and return null, NOT throw.
+    vi.useFakeTimers();
+    const result = await pastTimeout(fetchClientIdMetadata(clientId));
 
     // Despite cancel() rejecting, the function should still resolve to null.
     expect(result).toBeNull();

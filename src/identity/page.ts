@@ -8,6 +8,7 @@
 // Every interpolated value is HTML-escaped to prevent injection via attacker-controlled
 // OAuth params (client_id, redirect_uri, state, …) or field/branding config.
 import type { IdentityConfig } from "../config.js";
+import { isLoopbackHost } from "../oauth/redirect-uri.js";
 
 /** OAuth parameters threaded through the form as hidden inputs. */
 export interface AuthorizePageParams {
@@ -44,8 +45,7 @@ function safeAccent(value: string | undefined): string {
 function redirectUriDisplay(redirectUri: string): { hostname: string; isLocalhost: boolean } {
   try {
     const url = new URL(redirectUri);
-    const isLocalhost = url.hostname === "localhost" || url.hostname === "127.0.0.1";
-    return { hostname: url.hostname, isLocalhost };
+    return { hostname: url.hostname, isLocalhost: isLoopbackHost(url.hostname) };
   } catch {
     return { hostname: "(invalid redirect URI)", isLocalhost: false };
   }

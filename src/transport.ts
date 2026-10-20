@@ -14,7 +14,7 @@
 // the 401 challenge), and per-user rate limiting.
 import { createMcpHandler, McpServer } from "@modelcontextprotocol/server";
 import type { OAuthProvider } from "./oauth/provider.js";
-import type { RateLimiter } from "./rate-limit.js";
+import { retryAfterSeconds, type RateLimiter } from "./rate-limit.js";
 import type { KvLike } from "./storage/types.js";
 import type { ToolContext, ToolDef, MutatingToolDef, ObservabilityHooks } from "./config.js";
 import { registerTools } from "./tools/registry.js";
@@ -40,18 +40,13 @@ export function jsonRpcError(code: number, message: string) {
  * True when a present `Mcp-Method` (or, for `tools/call`, `Mcp-Name`) header doesn't match
  * the JSON-RPC body — guards against an edge proxy routing/authorizing on the header while
  * the server executes the body. The SDK enforces this only for 2026-07-28 (envelope)
- * requests, so the kit keeps it for claim-less ones too. Unparseable bodies, non-objects and
- * batches return false and are left to the SDK.
+ * requests, so the kit keeps it for claim-less ones too. Non-objects and batches return
+ * false and are left to the SDK.
  */
-function headerMismatch(req: Request, body: string): boolean {
+function headerMismatch(req: Request, body: unknown): boolean {
   const mcpMethod = req.headers.get("Mcp-Method");
   const mcpName = req.headers.get("Mcp-Name");
-  let parsed: { method?: unknown; params?: { name?: unknown } } | null;
-  try {
-    parsed = JSON.parse(body);
-  } catch {
-    return false;
-  }
+  const parsed = body as { method?: unknown; params?: { name?: unknown } } | null;
   if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return false;
   if (mcpMethod !== null && parsed.method !== mcpMethod) return true;
   return mcpName !== null && parsed.method === "tools/call" && parsed.params?.name !== mcpName;
@@ -84,9 +79,9 @@ export interface McpRequestDeps {
 }
 
 /**
- * Handle a single MCP `POST /` request: verify the Bearer token, rate-limit by user,
- * build a ToolContext, spin up a fresh McpServer + transport, register the granted tools,
- * and dispatch. Returns a JSON-RPC error Response on auth/rate-limit failure.
+ * Handle a single MCP `POST /mcp` request: verify the Bearer token, rate-limit by user,
+ * build a ToolContext, spin up a fresh McpServer + transport, register every tool (scope
+ * gating happens at dispatch), and dispatch. Returns a JSON-RPC error Response on auth/rate-limit failure.
  */
 export async function handleMcpRequest(req: Request, deps: McpRequestDeps): Promise<Response> {
   // MCP 2026-07-28 streamable-http spec: validate Origin to prevent DNS-rebinding attacks
@@ -120,13 +115,8 @@ export async function handleMcpRequest(req: Request, deps: McpRequestDeps): Prom
   }
   const token = authHeader.slice("Bearer ".length);
 
-  // Verify access token.
-  let auth: Awaited<ReturnType<OAuthProvider["verifyAccessToken"]>>;
-  try {
-    auth = await deps.provider.verifyAccessToken(token);
-  } catch {
-    auth = null;
-  }
+  // Verify access token (a throwing provider counts as an invalid token).
+  const auth = await deps.provider.verifyAccessToken(token).catch(() => null);
   if (!auth) {
     return unauthorized();
   }
@@ -136,15 +126,23 @@ export async function handleMcpRequest(req: Request, deps: McpRequestDeps): Prom
   if (!allowed) {
     return Response.json(jsonRpcError(JSON_RPC_ERROR.RATE_LIMITED, "Rate limit exceeded"), {
       status: 429,
-      headers: { "Retry-After": String(deps.rateLimiter.secondsUntilReset?.() ?? 3600) },
+      headers: { "Retry-After": String(retryAfterSeconds(deps.rateLimiter)) },
     });
   }
 
-  // Only requests carrying the headers pay for reading a (capped) copy of the body.
+  // Only requests carrying the headers pay for reading the (capped) body here. It's parsed
+  // once and handed to the SDK as `parsedBody`, so the SDK neither clones nor re-reads it.
+  let parsedBody: unknown;
   if (req.headers.has("Mcp-Method") || req.headers.has("Mcp-Name")) {
-    const body = await readCappedBody(req.clone());
+    const body = await readCappedBody(req);
     if (body instanceof Response) return body;
-    if (headerMismatch(req, body)) {
+    try {
+      parsedBody = JSON.parse(body);
+    } catch {
+      // Unparseable: give the SDK the bytes back so it answers with its own parse error.
+      req = new Request(req, { body });
+    }
+    if (parsedBody !== undefined && headerMismatch(req, parsedBody)) {
       return Response.json(
         jsonRpcError(
           JSON_RPC_ERROR.HEADER_MISMATCH,
@@ -170,13 +168,14 @@ export async function handleMcpRequest(req: Request, deps: McpRequestDeps): Prom
   const handler = createMcpHandler(
     () => {
       const server = new McpServer({ name: deps.serverName, version: deps.serverVersion });
-      registerTools(server, deps.tools, ctx, auth.scopes);
+      registerTools(server, deps.tools, ctx);
       return server;
     },
     { maxRequestBodySize: MAX_BODY_BYTES },
   );
   try {
     return await handler.fetch(req, {
+      ...(parsedBody !== undefined && { parsedBody }),
       authInfo: {
         token,
         clientId: auth.clientId,

@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { KvLike } from "./storage/types.js";
 import type { TokenTtlConfig } from "./oauth/provider.js";
+import type { WaitUntil } from "./http/wait-until.js";
 
 /** A single OAuth scope the server advertises. */
 export interface ScopeConfig {
@@ -154,7 +155,7 @@ export interface ToolContext {
    * The runtime's `waitUntil` on Cloudflare Workers / edge runtimes (undefined on Node): hand
    * it a promise to keep background work alive after the response is sent.
    */
-  waitUntil?: (promise: Promise<unknown>) => void;
+  waitUntil?: WaitUntil;
 }
 
 /** A standard (read / non-mutating) tool definition. Wrap in `defineTool` for typed `input`. */
