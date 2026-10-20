@@ -14,7 +14,7 @@ import {
   type McpServerConfig,
 } from "../src/index.js";
 import { idempotencyKey, userRateKey } from "../src/storage/keys.js";
-import { secondsUntilHourWindowResets } from "../src/http/wait-until.js";
+import { createRateLimiter } from "../src/rate-limit.js";
 import { callTool, getToken, mcpRequest, pkce } from "./helpers.js";
 
 const BASE_URL = "https://example.test";
@@ -194,6 +194,28 @@ describe("login page", () => {
     expect(html).toContain("<code>pay</code> — Move money");
   });
 
+  it("GET /authorize never fetches a client metadata document (that route isn't rate limited)", async () => {
+    const realFetch = globalThis.fetch;
+    let fetched = 0;
+    globalThis.fetch = (async () => {
+      fetched++;
+      return new Response("{}");
+    }) as typeof fetch;
+    try {
+      const app = makeApp({ allowClientIdMetadataDocuments: true });
+      const q = new URLSearchParams({
+        response_type: "code",
+        client_id: "https://client.example/meta.json",
+        redirect_uri: "https://client.example/cb",
+        code_challenge: "abc",
+      });
+      expect((await app.request(`/authorize?${q}`)).status).toBe(200);
+      expect(fetched).toBe(0);
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
   it("GET /authorize refuses to render for an unregistered client or redirect", async () => {
     const app = makeApp();
     const clientId = await register(app);
@@ -283,6 +305,37 @@ describe("token family revocation", () => {
     expect(await p.verifyAccessToken(t1.accessToken)).not.toBeNull();
     await expect(exchange()).rejects.toThrow(/Invalid or expired/);
     expect(await p.verifyAccessToken(t1.accessToken)).toBeNull();
+  });
+
+  it("a replay from a different client_id is refused without revoking the session", async () => {
+    const p = provider();
+    const { code, exchange } = await issueViaProvider(p);
+    const t1 = await exchange();
+    await expect(
+      p.exchangeCode({
+        code,
+        clientId: "someone-else",
+        redirectUri: "https://app/cb",
+        codeVerifier: "x",
+        resource: RESOURCE,
+      }),
+    ).rejects.toThrow();
+    expect(await p.verifyAccessToken(t1.accessToken)).not.toBeNull();
+  });
+
+  it("a client_id mismatch does not consume the code", async () => {
+    const p = provider();
+    const { code, exchange } = await issueViaProvider(p);
+    await expect(
+      p.exchangeCode({
+        code,
+        clientId: "someone-else",
+        redirectUri: "https://app/cb",
+        codeVerifier: "x",
+        resource: RESOURCE,
+      }),
+    ).rejects.toThrow(/Client ID mismatch/);
+    expect(await exchange()).toMatchObject({ userId: "user-1" });
   });
 
   it("a failed redemption (wrong PKCE verifier) consumes the code", async () => {
@@ -417,6 +470,56 @@ describe("confirm_request", () => {
     expect(sent).toEqual([25, 400]);
   });
 
+  it("lets a retry with the same token and key re-run after execute throws", async () => {
+    let attempts = 0;
+    const app = makeApp({
+      tools: [
+        defineTool({
+          name: "flaky",
+          description: "f",
+          inputSchema: z.object({}),
+          mutating: {
+            preview: async () => ({ summary: "f", data: null }),
+            execute: async () => {
+              if (++attempts === 1) throw new Error("transient");
+              return "done";
+            },
+          },
+        }),
+      ],
+    });
+    const token = await getToken(app);
+    const ct = (
+      (await callTool(app, token, "flaky", {})) as {
+        structuredContent: { confirmationToken: string };
+      }
+    ).structuredContent.confirmationToken;
+    const args = { confirmationToken: ct, idempotencyKey: "retry" };
+    expect(await callTool(app, token, "confirm_request", args)).toMatchObject({ isError: true });
+    expect(text(await callTool(app, token, "confirm_request", args))).toBe("done");
+    expect(attempts).toBe(2);
+  });
+
+  it("previews a tool whose parsed input isn't JSON-serializable (only data is stored)", async () => {
+    const app = makeApp({
+      tools: [
+        defineTool({
+          name: "big",
+          description: "b",
+          inputSchema: z.object({ n: z.coerce.bigint() }),
+          mutating: {
+            preview: async ({ n }) => ({ summary: `n=${n}`, data: { n: String(n) } }),
+            execute: async ({ n }) => `got ${n}`,
+          },
+        }),
+      ],
+    });
+    const token = await getToken(app);
+    const res = await callTool(app, token, "big", { n: "12345678901234567890" });
+    expect(res).not.toMatchObject({ isError: true });
+    expect(res).toMatchObject({ structuredContent: { status: "preview" } });
+  });
+
   it("flags every refused confirm as isError", async () => {
     const { app, preview } = payApp();
     const token = await getToken(app);
@@ -433,7 +536,7 @@ describe("confirm_request", () => {
     });
   });
 
-  it("gives onMutation the input, data, result and idempotency key — once", async () => {
+  it("gives onMutation the data, result and idempotency key — once", async () => {
     const events: unknown[] = [];
     const { app, preview } = payApp({ onMutation: async (e) => void events.push(e) });
     const token = await getToken(app);
@@ -446,7 +549,6 @@ describe("confirm_request", () => {
       userId: "user-1",
       toolName: "send",
       summary: "Send 7",
-      input: { cents: 7 },
       data: { cents: 7 },
       result: { content: [{ type: "text", text: "sent 7" }] },
       idempotencyKey: "m1",
@@ -581,11 +683,34 @@ describe("waitUntil", () => {
   });
 });
 
+describe("waitUntil guard", () => {
+  it("ignores an execution context without a callable waitUntil", async () => {
+    const app = makeApp({ hooks: { onAudit: async () => {} } });
+    const { clientId } = await login(app);
+    expect(clientId).toBeTruthy();
+    const res = await app.request(
+      "/register",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ redirect_uris: ["https://app/cb"] }),
+      },
+      {},
+      { waitUntil: undefined, passThroughOnException: () => {}, props: {} } as never,
+    );
+    expect(res.status).toBe(201);
+  });
+});
+
 describe("Retry-After", () => {
   it("is the time until the hourly window resets", () => {
-    expect(secondsUntilHourWindowResets(0)).toBe(3600);
-    expect(secondsUntilHourWindowResets(3_599_000)).toBe(1);
-    expect(secondsUntilHourWindowResets(3_600_000 + 600_000)).toBe(3000);
+    let clock = 0;
+    const rl = createRateLimiter({ storage: createMemoryStorage(), now: () => clock });
+    expect(rl.secondsUntilReset?.()).toBe(3600);
+    clock = 3_599_000;
+    expect(rl.secondsUntilReset?.()).toBe(1);
+    clock = 3_600_000 + 600_000;
+    expect(rl.secondsUntilReset?.()).toBe(3000);
   });
 
   it("is sent on OAuth-endpoint 429s and on /mcp 429s", async () => {

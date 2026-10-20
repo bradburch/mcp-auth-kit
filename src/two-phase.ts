@@ -28,6 +28,7 @@ import {
 } from "./config.js";
 import { confirmKey, idempotencyKey } from "./storage/keys.js";
 import { randomToken, sha256Hex } from "./crypto.js";
+import { fireAndForget } from "./http/wait-until.js";
 
 /** Confirmation-token TTL — a previewed mutation expires after 5 minutes. */
 const CONFIRM_TTL_SECONDS = 300;
@@ -46,7 +47,6 @@ type IdempotencyRecord =
 interface ConfirmPayload {
   toolName: string;
   summary: string;
-  input: unknown;
   data: unknown;
   /** The user who previewed the mutation — only they may confirm it. */
   userId: string;
@@ -94,9 +94,10 @@ export function toolFailure(
   error: unknown,
 ): ToolResult {
   const expected = isToolError(error);
-  void Promise.resolve()
-    .then(() => ctx.hooks.onToolError?.({ userId: ctx.userId, toolName, phase, error, expected }))
-    .catch(() => {});
+  fireAndForget(
+    () => ctx.hooks.onToolError?.({ userId: ctx.userId, toolName, phase, error, expected }),
+    ctx.waitUntil,
+  );
   return toolErrorResult(error);
 }
 
@@ -121,9 +122,10 @@ export function scopeChallengeFor(tool: { scope?: string }) {
 
 /** Fire onToolCall (fire-and-forget — a misbehaving hook never fails the tool request). */
 export function fireToolCall(ctx: ToolContext, toolName: string, input: unknown): void {
-  void Promise.resolve()
-    .then(() => ctx.hooks.onToolCall?.({ userId: ctx.userId, toolName, channel: "mcp", input }))
-    .catch(() => {});
+  fireAndForget(
+    () => ctx.hooks.onToolCall?.({ userId: ctx.userId, toolName, channel: "mcp", input }),
+    ctx.waitUntil,
+  );
 }
 
 /** True when `value` looks like an MCP CallToolResult (every content item has a string type). */
@@ -196,7 +198,6 @@ export function registerMutatingTool(
       const payload: ConfirmPayload = {
         toolName: tool.name,
         summary: preview.summary,
-        input,
         data: preview.data,
         userId: ctx.userId,
       };
@@ -291,9 +292,10 @@ export function registerConfirmTool(
       // claim — nothing ran yet — then propagates to `guarded` for sanitizing.
       let tool: MutatingToolDef | undefined;
       let payload: ConfirmPayload;
+      let rawPayload: string | null;
+      const cKey = confirmKey(tokenHash);
       try {
-        const cKey = confirmKey(tokenHash);
-        const rawPayload = await ctx.storage.get(cKey);
+        rawPayload = await ctx.storage.get(cKey);
         if (rawPayload === null) {
           // Expired / invalid / already used — release the claim so a fresh confirm can run.
           await ctx.storage.delete(idemKey);
@@ -329,12 +331,16 @@ export function registerConfirmTool(
         throw e;
       }
 
-      // (c) Execute. Only a throw from execute itself counts as failure: release the claim so
-      //     a legitimate retry can re-run.
+      // (c) Execute. Only a throw from execute itself counts as failure: restore the consumed
+      //     token and release the claim so a legitimate retry (same token + key) can re-run.
+      //     ponytail: the restored token gets a fresh 5-minute TTL rather than its remainder.
       let raw: unknown;
       try {
         raw = await tool.mutating.execute(payload.data, ctx);
       } catch (e) {
+        await ctx.storage
+          .put(cKey, rawPayload, { ttlSeconds: CONFIRM_TTL_SECONDS })
+          .catch(() => {});
         await ctx.storage.delete(idemKey);
         return toolFailure(ctx, payload.toolName, "execute", e);
       }
@@ -364,7 +370,6 @@ export function registerConfirmTool(
           userId: ctx.userId,
           toolName: payload.toolName,
           summary: payload.summary,
-          input: payload.input,
           data: payload.data,
           result,
           idempotencyKey: rawKey,

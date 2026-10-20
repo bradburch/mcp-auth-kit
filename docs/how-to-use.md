@@ -492,7 +492,7 @@ All hooks are optional and fire-and-forget except `onMutation`, which is awaited
 hooks: {
   onToolCall: async (e) => log.info("tool", e.toolName, "by", e.userId),
   onAudit: async (e) => log.info("oauth", e.event, e.clientId, e.userId), // registered / issued / refreshed / revoked
-  onMutation: async (e) => auditLedger.write(e), // awaited — { summary, input, data, result, idempotencyKey, ... }
+  onMutation: async (e) => auditLedger.write(e), // awaited — { summary, data, result, idempotencyKey, ... }
   onToolError: async (e) => { if (!e.expected) alert(e.error); }, // expected = a ToolError rejection
 }
 ```

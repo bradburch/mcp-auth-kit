@@ -11,13 +11,24 @@ export type WaitUntil = (promise: Promise<unknown>) => void;
 export function waitUntilFor(c: Context): WaitUntil | undefined {
   try {
     const ec = c.executionCtx;
+    if (typeof ec?.waitUntil !== "function") return undefined;
     return (p) => ec.waitUntil(p);
   } catch {
     return undefined;
   }
 }
 
-/** Seconds until the current fixed one-hour rate-limit window resets (for `Retry-After`). */
-export function secondsUntilHourWindowResets(now = Date.now()): number {
-  return 3600 - (Math.floor(now / 1000) % 3600);
+/**
+ * Run a hook without awaiting it: errors are swallowed (a misbehaving hook never fails the
+ * request) and the promise is handed to `waitUntil` when the runtime has one. Never throws.
+ */
+export function fireAndForget(fn: () => unknown, waitUntil: WaitUntil | undefined): void {
+  const p = Promise.resolve()
+    .then(fn)
+    .catch(() => {});
+  try {
+    waitUntil?.(p);
+  } catch {
+    // A broken waitUntil must not turn a completed request into an error.
+  }
 }

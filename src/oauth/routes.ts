@@ -9,7 +9,7 @@ import { renderAuthorizePage, type AuthorizePageParams } from "../identity/page.
 import type { RateLimiter } from "../rate-limit.js";
 import { extractClientIp } from "../http/client-ip.js";
 import { readCappedBody } from "../http/body-limit.js";
-import { secondsUntilHourWindowResets, waitUntilFor, type WaitUntil } from "../http/wait-until.js";
+import { fireAndForget, waitUntilFor } from "../http/wait-until.js";
 import { hasFragment, isAllowedRedirectUriScheme } from "./redirect-uri.js";
 
 // ─── Security header constants ───────────────────────────────────────────────
@@ -135,22 +135,15 @@ export interface OAuthRouteDeps {
 }
 
 /**
- * Fire an onAudit event (fire-and-forget — errors are swallowed so a misbehaving
- * hook never fails the OAuth request). Handed to the runtime's `waitUntil` when there is
- * one, so a Worker doesn't cancel the hook once the response is sent.
+ * Fire an onAudit event (fire-and-forget — errors are swallowed so a misbehaving hook never
+ * fails the OAuth request; kept alive with the runtime's `waitUntil` when there is one).
  */
 function fireAudit(
+  c: Context,
   hooks: ObservabilityHooks | undefined,
   event: Parameters<NonNullable<ObservabilityHooks["onAudit"]>>[0],
-  waitUntil: WaitUntil | undefined,
 ): void {
-  if (!hooks?.onAudit) return;
-  const p = Promise.resolve()
-    .then(() => hooks.onAudit?.(event))
-    .catch(() => {
-      // Intentionally swallowed — hook errors must not surface to the client.
-    });
-  waitUntil?.(p);
+  if (hooks?.onAudit) fireAndForget(() => hooks.onAudit?.(event), waitUntilFor(c));
 }
 
 /**
@@ -188,7 +181,7 @@ export function mountOAuthRoutes(
     if (!rateLimiter) return null;
     const ok = await bucket(rateLimiter, clientIp(c));
     if (ok) return null;
-    c.header("Retry-After", String(secondsUntilHourWindowResets()));
+    c.header("Retry-After", String(rateLimiter.secondsUntilReset?.() ?? 3600));
     return c.json(oauthError("temporarily_unavailable", `rate limit exceeded (${limit})`), 429);
   };
 
@@ -260,7 +253,7 @@ export function mountOAuthRoutes(
         clientName: typeof body.client_name === "string" ? body.client_name : undefined,
         applicationType: applicationType as "web" | "native" | undefined,
       });
-      fireAudit(hooks, { event: "client_registered", clientId: result.clientId }, waitUntilFor(c));
+      fireAudit(c, hooks, { event: "client_registered", clientId: result.clientId });
       // RFC 7591 §3.2.1: echo client_id, redirect_uris, client_id_issued_at,
       // and token_endpoint_auth_method in the registration response.
       return c.json(
@@ -314,8 +307,13 @@ export function mountOAuthRoutes(
       return c.text("No identity provider configured", 400);
     }
     // Don't render a login form on this origin for a client/redirect pair that could never
-    // receive a code — it would only lend the real domain to a phishing link.
-    if (!(await provider.validateClientRedirect(clientId, redirectUri))) {
+    // receive a code — it would only lend the real domain to a phishing link. URL client_ids
+    // are skipped: resolving one may fetch its metadata document, and this route isn't rate
+    // limited — POST /authorize still validates it, behind the per-IP limit.
+    if (
+      !clientId.startsWith("https://") &&
+      !(await provider.validateClientRedirect(clientId, redirectUri))
+    ) {
       return c.text("Unknown client_id or unregistered redirect_uri", 400);
     }
     return c.html(
@@ -483,11 +481,7 @@ export function mountOAuthRoutes(
           resource,
         });
 
-        fireAudit(
-          hooks,
-          { event: "token_issued", clientId, userId: tokens.userId },
-          waitUntilFor(c),
-        );
+        fireAudit(c, hooks, { event: "token_issued", clientId, userId: tokens.userId });
         return c.json(tokenPairToResponse(tokens));
       } else if (grantType === "refresh_token") {
         const refreshToken = body.refresh_token ?? "";
@@ -497,11 +491,7 @@ export function mountOAuthRoutes(
         }
 
         const tokens = await provider.refresh({ refreshToken, clientId });
-        fireAudit(
-          hooks,
-          { event: "token_refreshed", clientId, userId: tokens.userId },
-          waitUntilFor(c),
-        );
+        fireAudit(c, hooks, { event: "token_refreshed", clientId, userId: tokens.userId });
         return c.json(tokenPairToResponse(tokens));
       } else {
         return c.json(
@@ -543,7 +533,7 @@ export function mountOAuthRoutes(
 
     try {
       const { userId } = await provider.revoke({ token, clientId });
-      fireAudit(hooks, { event: "token_revoked", clientId, userId }, waitUntilFor(c));
+      fireAudit(c, hooks, { event: "token_revoked", clientId, userId });
       // RFC 7009 §2.2: successful revocation always returns 200.
       return c.body(null, 200);
     } catch (e) {

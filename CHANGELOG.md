@@ -14,15 +14,18 @@ All notable changes to this project are documented here. The format is based on
   submitted secret was echoed into the 401 HTML).
 - **Behavior:** `GET /authorize` returns `400` for an unknown `client_id` or an unregistered
   `redirect_uri` instead of rendering the login form, so the real origin can't be lent to a
-  phishing link. `POST /authorize` rejects any `response_type` other than `code`
+  phishing link. (URL `client_id`s are still checked only on `POST`, behind the per-IP limit,
+  since resolving one can fetch its metadata document.) `POST /authorize` rejects any `response_type` other than `code`
   (`unsupported_response_type`).
 - **Behavior:** refresh-token reuse detection, `/revoke`, and a replayed authorization code now
   revoke the **whole token family**, including older-generation access tokens still inside
   their TTL (`verifyAccessToken` now checks the family record). Previously only the live pair
   was revoked.
-- **Behavior:** replaying an already-redeemed authorization code revokes the tokens minted
-  from it (RFC 6749 §4.1.2), and any failed code redemption (wrong PKCE verifier, client, or
-  redirect URI) consumes the code.
+- **Behavior:** replaying an already-redeemed authorization code from the same client revokes
+  the tokens minted from it (RFC 6749 §4.1.2), and a failed redemption by the code's client
+  (wrong PKCE verifier or redirect URI) consumes the code. A request with a different
+  `client_id` is refused without revoking or consuming anything, so a leaked code string alone
+  can't end someone's session.
 - Tokens from an authorization made without `resource` are bound to `${baseUrl}/mcp`, and the
   access-token audience check is now strict (a token without a resource is rejected).
 - Authorization codes and confirmation tokens are stored as their SHA-256 hash, like access
@@ -42,7 +45,10 @@ All notable changes to this project are documented here. The format is based on
   the socket peer is `(env as HttpBindings).incoming.socket.remoteAddress`.
 - The login page lists the scopes being granted, with each `ScopeConfig.description`.
 - `PreviewResult` type (`{ status: "preview", summary, confirmationToken }`) is exported.
-- `onMutation` events also carry `input`, `data`, `result`, and `idempotencyKey`.
+- `onMutation` events also carry `data`, `result`, and `idempotencyKey`.
+- `ToolContext.waitUntil` — the runtime's `waitUntil` on Workers/edge (undefined on Node).
+- `RateLimiter.secondsUntilReset?()` — optional; drives `Retry-After` (custom limiters
+  without it send a full hour).
 - `onToolError` events carry `expected: boolean` — `true` for a `ToolError` rejection.
 - `onAudit` `token_issued` / `token_refreshed` / `token_revoked` events include `userId`.
 - Fire-and-forget hooks (`onToolCall`, `onToolError`, `onAudit`) are registered with the
@@ -54,6 +60,9 @@ All notable changes to this project are documented here. The format is based on
 - Password fields are passed to `verify` verbatim — they were trimmed.
 - `429` responses on `/mcp` and the OAuth endpoints send `Retry-After` as the seconds until the
   fixed hourly window resets (was a constant `60`).
+- When `execute` throws, the confirmation token is restored along with the idempotency claim,
+  so retrying `confirm_request` with the same token and key re-runs it as documented (the
+  token used to be consumed, forcing a new preview).
 
 ### Changed
 
@@ -62,11 +71,20 @@ All notable changes to this project are documented here. The format is based on
   `{"success":false,"error":"..."}`. Previously these were non-error results.
 - **Behavior:** `onMutation` is not called when `confirm_request` replays a cached result —
   only when `execute` actually ran.
-- **Upgrade note — storage key format changed.** Because codes/confirmations are now keyed by
-  hash and key segments are URI-encoded, records written before the upgrade are not
-  recognized after it: in-flight authorization codes (≤5 min), pending confirmations (≤5 min),
-  idempotency records (≤10 min), and the current hour's rate-limit counters. Tokens and
-  clients are unaffected.
+- **Breaking (custom providers only):** `OAuthProvider.revoke` now resolves to
+  `{ userId?: string }` (was `void`), and `TokenPair` has a required `userId`. Code that
+  implements `OAuthProvider` itself for `mountOAuthRoutes` must return these.
+- **Upgrade notes.** Records written before the upgrade that are briefly affected:
+  - In-flight authorization codes and pending confirmations (≤5 min) are keyed by hash now,
+    so they aren't found — the user signs in or previews again.
+  - A `confirm_request` retried across the upgrade (≤10 min) gets an error instead of the
+    cached result (a generic error, or "expired" when the user id needed encoding). It does
+    **not** re-execute.
+  - Access tokens issued without a `resource` fail the strict audience check; clients
+    recover by refreshing (refresh tokens are re-bound to `${baseUrl}/mcp`).
+  - The current hour's rate-limit counters restart for keys whose segments needed encoding
+    (e.g. email-style user ids, IPv6 addresses).
+    Registered clients and other tokens are unaffected.
 
 - **Breaking:** migrated from `@modelcontextprotocol/sdk` v1 to the v2 SDK. Peer dependencies
   are now `@modelcontextprotocol/server ^2.3.1`, `hono ^4.11.4` and `zod ^4.2.0` (zod 3 is no

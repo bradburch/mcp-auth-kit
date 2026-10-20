@@ -19,7 +19,7 @@ import type { KvLike } from "./storage/types.js";
 import type { ToolContext, ToolDef, MutatingToolDef, ObservabilityHooks } from "./config.js";
 import { registerTools } from "./tools/registry.js";
 import { MAX_BODY_BYTES, readCappedBody } from "./http/body-limit.js";
-import { secondsUntilHourWindowResets, type WaitUntil } from "./http/wait-until.js";
+import type { WaitUntil } from "./http/wait-until.js";
 
 /** JSON-RPC error codes used by the transport layer. */
 export const JSON_RPC_ERROR = {
@@ -83,23 +83,6 @@ export interface McpRequestDeps {
   waitUntil?: WaitUntil;
 }
 
-/** Hand each fire-and-forget hook's promise to `waitUntil` (`onMutation` is awaited already). */
-function withWaitUntil(hooks: ObservabilityHooks, waitUntil?: WaitUntil): ObservabilityHooks {
-  if (!waitUntil) return hooks;
-  const keepAlive = <E>(fn?: (event: E) => Promise<void>) =>
-    fn &&
-    ((event: E) => {
-      const p = Promise.resolve().then(() => fn(event));
-      waitUntil(p.catch(() => {}));
-      return p;
-    });
-  return {
-    ...hooks,
-    onToolCall: keepAlive(hooks.onToolCall?.bind(hooks)),
-    onToolError: keepAlive(hooks.onToolError?.bind(hooks)),
-  };
-}
-
 /**
  * Handle a single MCP `POST /` request: verify the Bearer token, rate-limit by user,
  * build a ToolContext, spin up a fresh McpServer + transport, register the granted tools,
@@ -153,8 +136,7 @@ export async function handleMcpRequest(req: Request, deps: McpRequestDeps): Prom
   if (!allowed) {
     return Response.json(jsonRpcError(JSON_RPC_ERROR.RATE_LIMITED, "Rate limit exceeded"), {
       status: 429,
-      // Fixed hourly window: the bucket only refills when the hour rolls over.
-      headers: { "Retry-After": String(secondsUntilHourWindowResets()) },
+      headers: { "Retry-After": String(deps.rateLimiter.secondsUntilReset?.() ?? 3600) },
     });
   }
 
@@ -179,7 +161,8 @@ export async function handleMcpRequest(req: Request, deps: McpRequestDeps): Prom
     scopes: auth.scopes,
     storage: deps.storage,
     env: deps.env,
-    hooks: withWaitUntil(deps.hooks, deps.waitUntil),
+    hooks: deps.hooks,
+    waitUntil: deps.waitUntil,
   };
 
   // ponytail: a handler per request (the factory closes over this request's ctx). Cheap —

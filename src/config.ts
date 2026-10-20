@@ -80,8 +80,6 @@ export interface ObservabilityHooks {
     toolName: string;
     /** The preview's summary — the same text the client saw before confirming. */
     summary: string;
-    /** The tool input the preview was called with. */
-    input: unknown;
     /** The preview's `data`, as passed to `execute` (after a JSON round-trip). */
     data: unknown;
     /** The tool result returned to the client. */
@@ -152,6 +150,11 @@ export interface ToolContext {
    */
   env: unknown;
   hooks: ObservabilityHooks;
+  /**
+   * The runtime's `waitUntil` on Cloudflare Workers / edge runtimes (undefined on Node): hand
+   * it a promise to keep background work alive after the response is sent.
+   */
+  waitUntil?: (promise: Promise<unknown>) => void;
 }
 
 /** A standard (read / non-mutating) tool definition. Wrap in `defineTool` for typed `input`. */

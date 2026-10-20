@@ -72,6 +72,8 @@ interface AuthCodeData {
  */
 interface UsedAuthCode {
   usedFamilyId: string;
+  /** Only a replay by the code's own client revokes — see exchangeCode. */
+  clientId: string;
   createdAt: number;
 }
 
@@ -386,16 +388,25 @@ export function createOAuthProvider(config: OAuthProviderConfig): OAuthProvider 
       }
       const stored = JSON.parse(raw) as AuthCodeData | UsedAuthCode;
 
-      // A replay of an already-redeemed code: revoke what it minted (RFC 6749 §4.1.2).
+      // A replay of an already-redeemed code by the same client: revoke what it minted
+      // (RFC 6749 §4.1.2). A different client_id leaves it alone, so a leaked code string by
+      // itself can't be used to kill someone else's session.
       if ("usedFamilyId" in stored) {
-        await revokeFamily(stored.usedFamilyId);
-        await storage.delete(codeKey);
+        if (stored.clientId === input.clientId) {
+          await revokeFamily(stored.usedFamilyId);
+          await storage.delete(codeKey);
+        }
         throw new Error("Invalid or expired authorization code");
       }
       const codeData = stored;
 
-      // Any failed redemption consumes the code — an attacker holding a stolen code gets
-      // one guess at the verifier/client, not five minutes of them.
+      // A client_id mismatch is refused WITHOUT consuming the code (same reasoning as above).
+      if (codeData.clientId !== input.clientId) {
+        throw new Error("Client ID mismatch");
+      }
+
+      // Any other failed redemption by the right client consumes the code — a stolen code
+      // gets one guess at the verifier, not five minutes of them.
       const reject = async (message: string): Promise<never> => {
         await storage.delete(codeKey);
         throw new Error(message);
@@ -404,10 +415,6 @@ export function createOAuthProvider(config: OAuthProviderConfig): OAuthProvider 
       // Defense-in-depth expiry (independent of KV TTL).
       if (isExpired(codeData.createdAt, TTL.AUTH_CODE)) {
         return reject("Invalid or expired authorization code");
-      }
-
-      if (codeData.clientId !== input.clientId) {
-        return reject("Client ID mismatch");
       }
 
       // RFC 6749 §4.1.3: redirect_uri is required and must match the authorization request.
@@ -432,7 +439,11 @@ export function createOAuthProvider(config: OAuthProviderConfig): OAuthProvider 
       // Single-use: swap the code for a used-marker before issuing tokens, so a replay is
       // detectable for the rest of the code's lifetime.
       const familyId = crypto.randomUUID();
-      const used: UsedAuthCode = { usedFamilyId: familyId, createdAt: codeData.createdAt };
+      const used: UsedAuthCode = {
+        usedFamilyId: familyId,
+        clientId: codeData.clientId,
+        createdAt: codeData.createdAt,
+      };
       await storage.put(codeKey, JSON.stringify(used), { ttlSeconds: TTL.AUTH_CODE });
 
       // Always bind to this server's resource — a code authorized without an explicit
@@ -465,6 +476,9 @@ export function createOAuthProvider(config: OAuthProviderConfig): OAuthProvider 
       }
       // A revoked lineage (reuse detection, /revoke, code replay) deletes the family record;
       // that must kill every access token in it, not just the newest one.
+      // ponytail: a second sequential KV read per authenticated request. If that latency
+      // matters, track the family's live access-token hashes in the family record and delete
+      // them all on revoke instead.
       if (!tokenData.familyId || (await storage.get(tokenFamilyKey(tokenData.familyId))) === null) {
         return null;
       }
