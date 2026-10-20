@@ -277,7 +277,7 @@ The Hono app returned by `createMcpServer` must be served at the **origin root**
 | `POST`   | `/token`                                  | Token exchange (`authorization_code` + `refresh_token`) |
 | `POST`   | `/revoke`                                 | Token revocation (RFC 7009)                             |
 | `POST`   | `/mcp`                                    | MCP transport (stateless streamable-HTTP)               |
-| `GET`    | `/mcp`                                    | 405 — stateless mode, no SSE                            |
+| `GET`    | `/mcp`                                    | 405 — stateless mode, no GET stream                     |
 | `DELETE` | `/mcp`                                    | 405 — stateless mode, no sessions                       |
 
 ### Request body limit

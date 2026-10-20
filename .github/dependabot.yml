@@ -17,6 +17,10 @@ updates:
       # checker reflects the OLDEST supported runtime. Don't let it drift to a newer major.
       - dependency-name: "@types/node"
         update-types: ["version-update:semver-major"]
+      # typescript-eslint's peer range is still `typescript <6.1.0`, so a TS 7 bump can't
+      # install (ERESOLVE). Drop this once typescript-eslint supports TS 7.
+      - dependency-name: "typescript"
+        update-types: ["version-update:semver-major"]
 
   # Keep GitHub Actions (checkout, setup-node, …) current.
   - package-ecosystem: github-actions

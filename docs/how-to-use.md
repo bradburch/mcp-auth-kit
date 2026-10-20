@@ -205,8 +205,9 @@ scopes: [
 
 Attach `scope` to a tool to gate it. The tool is always listed in `tools/list` regardless
 of the caller's granted scopes — a client can discover it exists and ask for the scope via
-step-up authorization. A caller whose token lacks the scope gets an `isError` result
-naming the missing scope instead of the handler running:
+step-up authorization. A `tools/call` from a caller whose token lacks the scope is answered
+with HTTP `403` and a `WWW-Authenticate: Bearer error="insufficient_scope", scope="write", ...`
+challenge before the handler runs — a compliant client uses it to request the scope:
 
 ```ts
 {
