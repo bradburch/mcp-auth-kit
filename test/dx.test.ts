@@ -9,7 +9,7 @@ import {
   ToolError,
   type McpServerConfig,
 } from "../src/index.js";
-import { getToken, callTool } from "./helpers.js";
+import { getToken, callTool, readRpc } from "./helpers.js";
 
 const base = {
   baseUrl: "https://example.test",
@@ -153,7 +153,8 @@ describe("FastMCP-style DX", () => {
         },
       }),
     });
-    expect((await res.json()).result.serverInfo).toEqual({ name: "my-server", version: "9.9.9" });
+    // A claim-less initialize exercises the SDK's 2025-era stateless fallback.
+    expect((await readRpc(res)).result.serverInfo).toEqual({ name: "my-server", version: "9.9.9" });
   });
 });
 

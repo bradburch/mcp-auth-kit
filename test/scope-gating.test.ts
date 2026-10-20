@@ -8,11 +8,11 @@
 // constructing a narrow-scope token via the HTTP flow would be awkward.
 import { describe, it, expect } from "vitest";
 import { z } from "zod";
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { McpServer } from "@modelcontextprotocol/server";
 import { createMcpServer } from "../src/server.js";
 import { createMemoryStorage } from "../src/storage/memory.js";
 import { registerTools } from "../src/tools/registry.js";
-import { getToken } from "./helpers.js";
+import { getToken, readRpc } from "./helpers.js";
 import type { ToolContext } from "../src/config.js";
 
 const baseUrl = "https://example.test";
@@ -41,8 +41,7 @@ async function listRegisteredTools(
   // We can ask via the transport — but it's simpler to inspect the names that were
   // registered, since McpServer registers them on a Handler map we can iterate.
   // Simplest approach: use JSON-RPC over WebStandardStreamableHTTPServerTransport.
-  const { WebStandardStreamableHTTPServerTransport } =
-    await import("@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js");
+  const { WebStandardStreamableHTTPServerTransport } = await import("@modelcontextprotocol/server");
   const transport = new WebStandardStreamableHTTPServerTransport({
     sessionIdGenerator: undefined,
     enableJsonResponse: true,
@@ -176,7 +175,7 @@ describe("scope gating (integration via HTTP)", () => {
       }),
     });
     expect(res.status).toBe(200);
-    const body = await res.json();
+    const body = await readRpc(res);
     const names: string[] = body.result.tools.map((t: any) => t.name);
     expect(names).toContain("open_tool");
     expect(names).toContain("write_action"); // listed for discovery, even though ungranted
@@ -236,7 +235,7 @@ describe("insufficient_scope — 403 step-up flow", () => {
       },
       body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
     });
-    const body = await res.json();
+    const body = await readRpc(res);
     expect(body.result.tools.map((t: { name: string }) => t.name)).toContain("delete_thing");
   });
 
@@ -303,12 +302,9 @@ describe("insufficient_scope — 403 step-up flow", () => {
     expect(res.status).toBe(200);
   });
 
-  it("gates an ungranted mutating tool called inside a JSON-RPC batch (transport-level 403 only covers a single non-batch call)", async () => {
-    // A batch request is an array — the transport-level 403 short-circuit deliberately only
-    // fires for a single, non-batch tools/call (a batch mixing granted/ungranted calls can't
-    // map cleanly to one HTTP status). This proves the ONLY thing protecting an ungranted
-    // mutating tool called via a batch is registerTools's own per-call gating in registry.ts
-    // (registerUngrantedMutatingTool) — not the transport-level check.
+  it("gates an ungranted mutating tool called inside a JSON-RPC batch with the same 403", async () => {
+    // The SDK evaluates each tool's scopeChallenge for every request in a (legacy) batch, so
+    // a batch can't be used to slip an ungranted call past the HTTP-level challenge.
     const mutatingWriteTool = {
       name: "delete_thing_mutating",
       description: "delete (two-phase)",
@@ -343,16 +339,9 @@ describe("insufficient_scope — 403 step-up flow", () => {
         },
       ]),
     });
-    // The batch falls through the transport-level 403 check by design — normal 200 dispatch.
-    expect(res.status).toBe(200);
-    const body = await res.json();
-    const bodyText = JSON.stringify(body);
-    // The real preview/confirm machinery (two-phase.ts) was never reached — no confirmation
-    // token was minted, proving registerUngrantedMutatingTool's immediate-reject handler ran
-    // instead of registerMutatingTool's real preview handler.
-    expect(bodyText).not.toContain("confirmationToken");
-    const rpcResponse = Array.isArray(body) ? body[0] : body;
-    expect(rpcResponse.result.isError).toBe(true);
-    expect(JSON.stringify(rpcResponse.result)).toContain("write");
+    expect(res.status).toBe(403);
+    expect(res.headers.get("WWW-Authenticate")).toContain('scope="write"');
+    // The preview handler never ran — no confirmation token was minted.
+    expect(await res.text()).not.toContain("confirmationToken");
   });
 });

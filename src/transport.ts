@@ -1,20 +1,24 @@
-// MCP Streamable HTTP transport handler (stateless JSON mode).
+// MCP Streamable HTTP transport handler (stateless).
 //
-// Each POST creates a fresh McpServer + WebStandardStreamableHTTPServerTransport
-// (sessionIdGenerator: undefined, enableJsonResponse: true) — no sessions, auth is
-// per-request via Bearer token. GET/DELETE are 405 (no SSE, no sessions to terminate).
+// Built on the v2 SDK's `createMcpHandler`, which serves the 2026-07-28 protocol revision
+// (per-request `_meta` envelope, `server/discover`, `resultType`) and falls back to
+// stateless 2025-era serving for clients that still `initialize`. The SDK owns the
+// protocol-level checks: `MCP-Protocol-Version`/`Mcp-Method`/`Mcp-Name` header validation
+// on 2026-07-28 requests (400 / -32020), the request-body cap (413), Content-Type (415), and
+// the per-tool `insufficient_scope` 403 challenge (via each tool's `scopeChallenge`, see
+// registry.ts). The kit re-checks `Mcp-Method`/`Mcp-Name` against the body for claim-less
+// requests too, since the SDK's legacy fallback doesn't (see `headerMismatch`).
 //
-// Key subtlety: the request body must be read once up front (before any middleware could
-// consume the stream), then a fresh Request is reconstructed from that text so the SDK
-// transport can re-read it.
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
+// The kit also keeps what's specific to it, in front of the SDK: exact-match Origin validation,
+// Bearer verification against its own authorization server (with the default-scope hint in
+// the 401 challenge), and per-user rate limiting.
+import { createMcpHandler, McpServer } from "@modelcontextprotocol/server";
 import type { OAuthProvider } from "./oauth/provider.js";
 import type { RateLimiter } from "./rate-limit.js";
 import type { KvLike } from "./storage/types.js";
 import type { ToolContext, ToolDef, MutatingToolDef, ObservabilityHooks } from "./config.js";
 import { registerTools } from "./tools/registry.js";
-import { readCappedBody } from "./http/body-limit.js";
+import { MAX_BODY_BYTES, readCappedBody } from "./http/body-limit.js";
 
 /** JSON-RPC error codes used by the transport layer. */
 export const JSON_RPC_ERROR = {
@@ -22,8 +26,7 @@ export const JSON_RPC_ERROR = {
   AUTH_REQUIRED: -32001,
   RATE_LIMITED: -32002,
   ORIGIN_NOT_ALLOWED: -32003,
-  HEADER_MISMATCH: -32020, // matches the MCP 2026-07-28 error-code allocation policy
-  INSUFFICIENT_SCOPE: -32021, // matches the MCP 2026-07-28 error-code allocation policy
+  HEADER_MISMATCH: -32020, // spec HeaderMismatch — same code the SDK uses on the modern path
   INTERNAL: -32603,
 } as const;
 
@@ -33,38 +36,24 @@ export function jsonRpcError(code: number, message: string) {
 }
 
 /**
- * MCP 2026-07-28 streamable-http spec: reject a request where `Mcp-Method` (and, for
- * `tools/call`, `Mcp-Name`) don't match the JSON-RPC body — guards against an edge proxy
- * routing/authorizing on the header while the server executes on the body. A request with
- * NO such headers (older clients) is unaffected; only a present-but-mismatched header is
- * rejected. An unparseable body is not rejected here — the SDK transport handles that.
+ * True when a present `Mcp-Method` (or, for `tools/call`, `Mcp-Name`) header doesn't match
+ * the JSON-RPC body — guards against an edge proxy routing/authorizing on the header while
+ * the server executes the body. The SDK enforces this only for 2026-07-28 (envelope)
+ * requests, so the kit keeps it for claim-less ones too. Unparseable bodies, non-objects and
+ * batches return false and are left to the SDK.
  */
-function headerMismatch(req: Request, requestBody: string): boolean {
+function headerMismatch(req: Request, body: string): boolean {
   const mcpMethod = req.headers.get("Mcp-Method");
   const mcpName = req.headers.get("Mcp-Name");
-  if (mcpMethod === null && mcpName === null) return false;
-
-  let parsedRaw: unknown;
+  let parsed: { method?: unknown; params?: { name?: unknown } } | null;
   try {
-    parsedRaw = JSON.parse(requestBody);
+    parsed = JSON.parse(body);
   } catch {
-    return false; // let the SDK's own JSON-RPC parse-error handling take over
-  }
-  // A bare null/array/scalar isn't a JSON-RPC request shape — treat it the same as
-  // unparseable and let the SDK transport reject it downstream (mirrors the same guard
-  // in oauth/routes.ts's readBodyParsed). Arrays (JSON-RPC batch requests) are explicitly
-  // excluded here too: they fall through to normal dispatch, where registry-level scope
-  // gating handles each element individually.
-  if (parsedRaw === null || Array.isArray(parsedRaw) || typeof parsedRaw !== "object") {
     return false;
   }
-  const parsed = parsedRaw as { method?: unknown; params?: { name?: unknown } };
-
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return false;
   if (mcpMethod !== null && parsed.method !== mcpMethod) return true;
-  if (mcpName !== null && parsed.method === "tools/call" && parsed.params?.name !== mcpName) {
-    return true;
-  }
-  return false;
+  return mcpName !== null && parsed.method === "tools/call" && parsed.params?.name !== mcpName;
 }
 
 export interface McpRequestDeps {
@@ -105,23 +94,6 @@ export async function handleMcpRequest(req: Request, deps: McpRequestDeps): Prom
     });
   }
 
-  // Read the body up front (before anything else could consume the stream), with the
-  // 1 MB cap enforced while streaming — a pre-auth DoS guard that never buffers an
-  // unbounded chunked body into memory.
-  const capped = await readCappedBody(req);
-  if (capped instanceof Response) return capped;
-  const requestBody = capped;
-
-  if (headerMismatch(req, requestBody)) {
-    return Response.json(
-      jsonRpcError(
-        JSON_RPC_ERROR.HEADER_MISMATCH,
-        "Mcp-Method/Mcp-Name header does not match request body",
-      ),
-      { status: 400 },
-    );
-  }
-
   // RFC 9728: tell clients where to discover OAuth endpoints on a 401.
   const resourceMetadataUrl = `${deps.baseUrl}/.well-known/oauth-protected-resource`;
   // RFC 6750 §3 / MCP 2026-07-28 Authorization spec: hint the scopes needed so
@@ -143,7 +115,7 @@ export async function handleMcpRequest(req: Request, deps: McpRequestDeps): Prom
   const token = authHeader.slice("Bearer ".length);
 
   // Verify access token.
-  let auth: { userId: string; scopes: string[] } | null;
+  let auth: Awaited<ReturnType<OAuthProvider["verifyAccessToken"]>>;
   try {
     auth = await deps.provider.verifyAccessToken(token);
   } catch {
@@ -162,6 +134,21 @@ export async function handleMcpRequest(req: Request, deps: McpRequestDeps): Prom
     });
   }
 
+  // Only requests carrying the headers pay for reading a (capped) copy of the body.
+  if (req.headers.has("Mcp-Method") || req.headers.has("Mcp-Name")) {
+    const body = await readCappedBody(req.clone());
+    if (body instanceof Response) return body;
+    if (headerMismatch(req, body)) {
+      return Response.json(
+        jsonRpcError(
+          JSON_RPC_ERROR.HEADER_MISMATCH,
+          "Mcp-Method/Mcp-Name header does not match request body",
+        ),
+        { status: 400 },
+      );
+    }
+  }
+
   // Build the per-request tool context.
   const ctx: ToolContext = {
     userId: auth.userId,
@@ -171,76 +158,28 @@ export async function handleMcpRequest(req: Request, deps: McpRequestDeps): Prom
     hooks: deps.hooks,
   };
 
-  // Spec SHOULD: a single (non-batch) tools/call for a tool the caller's scopes don't
-  // grant gets the HTTP-level 403 insufficient_scope challenge, in addition to (not
-  // instead of) the isError tool result registry.ts already returns — a batch request or
-  // any other method falls through to the normal 200 JSON-RPC dispatch, where per-call
-  // scope handling in registry.ts still applies.
-  let parsedForScopeCheck: { method?: unknown; params?: { name?: unknown } } | null = null;
-  try {
-    parsedForScopeCheck = JSON.parse(requestBody);
-  } catch {
-    parsedForScopeCheck = null;
-  }
-  if (
-    parsedForScopeCheck &&
-    !Array.isArray(parsedForScopeCheck) &&
-    parsedForScopeCheck.method === "tools/call" &&
-    typeof parsedForScopeCheck.params?.name === "string"
-  ) {
-    const calledTool = deps.tools.find((t) => t.name === parsedForScopeCheck!.params!.name);
-    if (calledTool?.scope && !auth.scopes.includes(calledTool.scope)) {
-      return Response.json(jsonRpcError(JSON_RPC_ERROR.INSUFFICIENT_SCOPE, "Insufficient scope"), {
-        status: 403,
-        headers: {
-          "WWW-Authenticate": `Bearer error="insufficient_scope", scope="${calledTool.scope}", resource_metadata="${resourceMetadataUrl}"`,
-        },
-      });
-    }
-  }
-
-  // Fresh server + stateless JSON transport for this request.
-  const server = new McpServer({
-    name: deps.serverName,
-    version: deps.serverVersion,
-  });
-  registerTools(server, deps.tools, ctx, auth.scopes);
-
-  const transport = new WebStandardStreamableHTTPServerTransport({
-    sessionIdGenerator: undefined, // stateless — no sessions
-    enableJsonResponse: true,
-  });
-
-  await server.connect(transport);
-
-  // Reconstruct the request with the body read above so the transport can re-read it.
-  const freshRequest = new Request(req.url, {
-    method: "POST",
-    headers: req.headers,
-    body: requestBody,
-  });
-
-  // TODO(fix6): verifyAccessToken currently returns { userId, scopes } only.
-  // To thread a real clientId here, update the OAuthProvider interface and the
-  // provider implementation to include clientId in the verifyAccessToken return
-  // shape — the underlying TokenData already stores it.
-  const response = await transport.handleRequest(freshRequest, {
-    authInfo: {
-      token,
-      clientId: "",
-      scopes: auth.scopes,
-      extra: { userId: auth.userId },
+  // ponytail: a handler per request (the factory closes over this request's ctx). Cheap —
+  // no subscriptions are served — but hoist it into createMcpServer if profiling says so.
+  const handler = createMcpHandler(
+    () => {
+      const server = new McpServer({ name: deps.serverName, version: deps.serverVersion });
+      registerTools(server, deps.tools, ctx, auth.scopes);
+      return server;
     },
-  });
-
-  // JSON mode resolves synchronously — safe to tear down now.
-  await transport.close();
-  await server.close();
-
-  if (!response) {
-    return Response.json(jsonRpcError(JSON_RPC_ERROR.INTERNAL, "No response from transport"), {
-      status: 500,
+    { maxRequestBodySize: MAX_BODY_BYTES },
+  );
+  try {
+    return await handler.fetch(req, {
+      authInfo: {
+        token,
+        clientId: auth.clientId,
+        scopes: auth.scopes,
+        // Lets the SDK's insufficient_scope challenge point clients at discovery (RFC 9728).
+        resourceMetadataUrl,
+        extra: { userId: auth.userId },
+      },
     });
+  } finally {
+    await handler.close();
   }
-  return response;
 }

@@ -19,7 +19,7 @@ const DEFAULT_SERVER_NAME = "mcp-oauth-kit";
 // Keep in sync with package.json's "version" — nothing enforces this automatically.
 const DEFAULT_SERVER_VERSION = "0.3.0";
 
-/** JSON-RPC error for the GET/DELETE 405 responses (no SSE / sessions in stateless mode). */
+/** JSON-RPC error for the GET/DELETE 405 responses (no GET stream / sessions in stateless mode). */
 function methodNotAllowed(message: string): Response {
   return Response.json(jsonRpcError(JSON_RPC_ERROR.METHOD_NOT_ALLOWED, message), { status: 405 });
 }
@@ -60,7 +60,7 @@ function assertValidTools(config: McpServerConfig): void {
     const shape = (tool.inputSchema as { shape?: unknown }).shape;
     if (typeof shape !== "object" || shape === null) {
       throw new Error(
-        `Tool "${tool.name}": inputSchema must be a z.object(...) — wrappers like .transform()/.pipe()/.default() (and .refine() under zod 3) hide its shape from tools/list; validate those inside the handler instead.`,
+        `Tool "${tool.name}": inputSchema must be a z.object(...) — wrappers like .transform()/.pipe()/.default() hide its shape from tools/list; validate those inside the handler instead.`,
       );
     }
   }
@@ -105,7 +105,7 @@ export function createMcpServer(config: McpServerConfig): Hono {
 
   const hooks = config.hooks ?? {};
 
-  // MCP transport — stateless JSON mode.
+  // MCP transport — stateless (2026-07-28, with the SDK's 2025-era fallback).
   app.post("/mcp", (c) =>
     handleMcpRequest(c.req.raw, {
       provider,

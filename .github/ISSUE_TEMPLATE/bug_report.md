@@ -34,4 +34,4 @@ What actually happened (include error messages / stack traces).
 - Node version:
 - Storage backend (memory / Cloudflare KV / custom):
 - Runtime (Cloudflare Workers / Node / Lambda / other):
-- Peer deps: `@modelcontextprotocol/sdk` version, `hono` version, `zod` version:
+- Peer deps: `@modelcontextprotocol/server` version, `hono` version, `zod` version:

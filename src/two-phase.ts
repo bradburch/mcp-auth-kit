@@ -14,7 +14,7 @@
 // sentinel backs off and asks the caller to retry. This NARROWS — but does not fully close —
 // the double-execute window; true exactly-once would require a strongly-consistent store
 // (e.g. a Durable Object). On execute failure the key is deleted so a legitimate retry re-runs.
-import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { requireScopes, type McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import {
   ToolError,
@@ -100,6 +100,11 @@ function guarded(ctx: ToolContext, toolName: string, fn: (input: unknown) => Pro
   };
 }
 
+/** The SDK scope challenge for a scoped tool (undefined for an unscoped one). */
+export function scopeChallengeFor(tool: { scope?: string }) {
+  return tool.scope === undefined ? undefined : requireScopes(tool.scope);
+}
+
 /** Fire onToolCall (fire-and-forget — a misbehaving hook never fails the tool request). */
 export function fireToolCall(ctx: ToolContext, toolName: string, input: unknown): void {
   void Promise.resolve()
@@ -153,7 +158,12 @@ export function registerMutatingTool(
 
   server.registerTool(
     tool.name,
-    { description: tool.description, inputSchema: tool.inputSchema, annotations },
+    {
+      description: tool.description,
+      inputSchema: tool.inputSchema,
+      annotations,
+      scopeChallenge: scopeChallengeFor(tool),
+    },
     guarded(ctx, tool.name, async (input: unknown) => {
       fireToolCall(ctx, tool.name, input);
       let preview: { summary: string; data: unknown };
@@ -214,7 +224,7 @@ export function registerConfirmTool(
       description:
         "Confirm and execute a previously previewed mutating request. " +
         "Requires the confirmationToken from the preview and a unique idempotencyKey.",
-      inputSchema: CONFIRM_INPUT.shape,
+      inputSchema: CONFIRM_INPUT,
       annotations: { destructiveHint: true },
     },
     guarded(ctx, "confirm_request", async (input: unknown): Promise<ToolResult> => {
