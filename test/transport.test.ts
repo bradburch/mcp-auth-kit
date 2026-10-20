@@ -164,6 +164,31 @@ describe("POST /mcp — Mcp-Method / Mcp-Name header validation", () => {
     expect(res.status).toBe(200);
   });
 
+  it("rejects a claim-less (2025-era) request whose Mcp-Method header doesn't match the body", async () => {
+    // The SDK only validates these headers on envelope-carrying requests; the kit re-checks
+    // legacy ones so an edge proxy routing on the header can't be bypassed.
+    const app = headerApp();
+    const token = await getToken(app);
+    const res = await app.request("/mcp", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${token}`,
+        "content-type": "application/json",
+        accept: "application/json, text/event-stream",
+        "mcp-method": "tools/list",
+        "mcp-name": "list_slots",
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: { name: "list_slots", arguments: {} },
+      }),
+    });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error.code).toBe(-32020);
+  });
+
   it("does not reject a JSON-RPC batch (array body) with HEADER_MISMATCH even when Mcp-Method is present", async () => {
     // A 2025-era batch is served by the SDK's legacy fallback, which doesn't apply the
     // 2026-07-28 header rules — a stray Mcp-Method header must not break it.

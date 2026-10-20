@@ -4,10 +4,12 @@
 // (per-request `_meta` envelope, `server/discover`, `resultType`) and falls back to
 // stateless 2025-era serving for clients that still `initialize`. The SDK owns the
 // protocol-level checks: `MCP-Protocol-Version`/`Mcp-Method`/`Mcp-Name` header validation
-// (400 / -32020), the request-body cap (413), Content-Type (415), and the per-tool
-// `insufficient_scope` 403 challenge (via each tool's `scopeChallenge`, see registry.ts).
+// on 2026-07-28 requests (400 / -32020), the request-body cap (413), Content-Type (415), and
+// the per-tool `insufficient_scope` 403 challenge (via each tool's `scopeChallenge`, see
+// registry.ts). The kit re-checks `Mcp-Method`/`Mcp-Name` against the body for claim-less
+// requests too, since the SDK's legacy fallback doesn't (see `headerMismatch`).
 //
-// The kit keeps what's specific to it, in front of the SDK: exact-match Origin validation,
+// The kit also keeps what's specific to it, in front of the SDK: exact-match Origin validation,
 // Bearer verification against its own authorization server (with the default-scope hint in
 // the 401 challenge), and per-user rate limiting.
 import { createMcpHandler, McpServer } from "@modelcontextprotocol/server";
@@ -16,20 +18,42 @@ import type { RateLimiter } from "./rate-limit.js";
 import type { KvLike } from "./storage/types.js";
 import type { ToolContext, ToolDef, MutatingToolDef, ObservabilityHooks } from "./config.js";
 import { registerTools } from "./tools/registry.js";
-import { MAX_BODY_BYTES } from "./http/body-limit.js";
+import { MAX_BODY_BYTES, readCappedBody } from "./http/body-limit.js";
 
-/** JSON-RPC error codes used by the transport layer (SDK-owned codes like -32020 aren't here). */
+/** JSON-RPC error codes used by the transport layer. */
 export const JSON_RPC_ERROR = {
   METHOD_NOT_ALLOWED: -32000,
   AUTH_REQUIRED: -32001,
   RATE_LIMITED: -32002,
   ORIGIN_NOT_ALLOWED: -32003,
+  HEADER_MISMATCH: -32020, // spec HeaderMismatch — same code the SDK uses on the modern path
   INTERNAL: -32603,
 } as const;
 
 /** Build a JSON-RPC error envelope (id: null — no request id at the transport boundary). */
 export function jsonRpcError(code: number, message: string) {
   return { jsonrpc: "2.0" as const, id: null, error: { code, message } };
+}
+
+/**
+ * True when a present `Mcp-Method` (or, for `tools/call`, `Mcp-Name`) header doesn't match
+ * the JSON-RPC body — guards against an edge proxy routing/authorizing on the header while
+ * the server executes the body. The SDK enforces this only for 2026-07-28 (envelope)
+ * requests, so the kit keeps it for claim-less ones too. Unparseable bodies, non-objects and
+ * batches return false and are left to the SDK.
+ */
+function headerMismatch(req: Request, body: string): boolean {
+  const mcpMethod = req.headers.get("Mcp-Method");
+  const mcpName = req.headers.get("Mcp-Name");
+  let parsed: { method?: unknown; params?: { name?: unknown } } | null;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    return false;
+  }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return false;
+  if (mcpMethod !== null && parsed.method !== mcpMethod) return true;
+  return mcpName !== null && parsed.method === "tools/call" && parsed.params?.name !== mcpName;
 }
 
 export interface McpRequestDeps {
@@ -108,6 +132,21 @@ export async function handleMcpRequest(req: Request, deps: McpRequestDeps): Prom
       status: 429,
       headers: { "Retry-After": "60" },
     });
+  }
+
+  // Only requests carrying the headers pay for reading a (capped) copy of the body.
+  if (req.headers.has("Mcp-Method") || req.headers.has("Mcp-Name")) {
+    const body = await readCappedBody(req.clone());
+    if (body instanceof Response) return body;
+    if (headerMismatch(req, body)) {
+      return Response.json(
+        jsonRpcError(
+          JSON_RPC_ERROR.HEADER_MISMATCH,
+          "Mcp-Method/Mcp-Name header does not match request body",
+        ),
+        { status: 400 },
+      );
+    }
   }
 
   // Build the per-request tool context.
