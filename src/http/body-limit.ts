@@ -10,7 +10,7 @@ function tooLargeResponse(): Response {
  * Cheap pre-check: reject when an honest `Content-Length` header already exceeds the cap,
  * before reading a single byte. Returns a 413 Response, or null to proceed to a full read.
  */
-export function bodyTooLarge(req: Request): Response | null {
+function bodyTooLarge(req: Request): Response | null {
   const contentLength = req.headers.get("Content-Length");
   if (contentLength !== null) {
     const len = Number.parseInt(contentLength, 10);
@@ -31,28 +31,44 @@ export async function readCappedBody(req: Request): Promise<string | Response> {
   const pre = bodyTooLarge(req);
   if (pre) return pre;
 
-  const body = req.body;
+  return (await readStreamCapped(req.body, MAX_BODY_BYTES)) ?? tooLargeResponse();
+}
+
+/**
+ * Decode a byte stream as text, cancelling the read the moment it exceeds `maxBytes` (→ null).
+ * With a `signal`, an abort also cancels the read and rejects. Stream errors propagate.
+ */
+export async function readStreamCapped(
+  body: ReadableStream<Uint8Array> | null,
+  maxBytes: number,
+  signal?: AbortSignal,
+): Promise<string | null> {
   if (!body) return "";
-
   const reader = body.getReader();
-  const chunks: Uint8Array[] = [];
+  const decoder = new TextDecoder();
+  const aborted =
+    signal &&
+    new Promise<never>((_, reject) =>
+      signal.addEventListener("abort", () => reject(new Error("abort"))),
+    );
   let total = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    total += value.byteLength;
-    if (total > MAX_BODY_BYTES) {
-      await reader.cancel();
-      return tooLargeResponse();
+  let text = "";
+  try {
+    for (;;) {
+      const { done, value } = await (aborted
+        ? Promise.race([reader.read(), aborted])
+        : reader.read());
+      if (done) return text + decoder.decode();
+      total += value.byteLength;
+      if (total > maxBytes) {
+        await reader.cancel();
+        return null;
+      }
+      text += decoder.decode(value, { stream: true });
     }
-    chunks.push(value);
+  } catch (e) {
+    // An errored stream (e.g. after abort) may reject cancel() too — that's expected.
+    await reader.cancel().catch(() => {});
+    throw e;
   }
-
-  const buf = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    buf.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return new TextDecoder().decode(buf);
 }

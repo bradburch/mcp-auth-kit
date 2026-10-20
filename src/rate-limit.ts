@@ -5,8 +5,8 @@ import { ipAuthRateKey, ipTokenRateKey, userRateKey } from "./storage/keys.js";
 const DEFAULT_USER_PER_HOUR = 50;
 const DEFAULT_IP_AUTHORIZE_PER_HOUR = 10;
 const DEFAULT_IP_TOKEN_PER_HOUR = 30;
-const TTL_SECONDS = 3600;
 const MS_PER_HOUR = 3_600_000;
+const TTL_SECONDS = MS_PER_HOUR / 1000;
 
 export interface RateLimiter {
   checkUser(userId: string): Promise<boolean>;
@@ -17,6 +17,11 @@ export interface RateLimiter {
    * custom limiters keep compiling; when absent the kit sends a conservative full hour.
    */
   secondsUntilReset?(): number;
+}
+
+/** `Retry-After` for a 429: the limiter's own reset time, or a conservative full hour. */
+export function retryAfterSeconds(rl: RateLimiter): number {
+  return rl.secondsUntilReset?.() ?? TTL_SECONDS;
 }
 
 async function checkBucket(storage: KvLike, key: string, limit: number): Promise<boolean> {

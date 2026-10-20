@@ -15,7 +15,14 @@ import {
 } from "../src/index.js";
 import { idempotencyKey, userRateKey } from "../src/storage/keys.js";
 import { createRateLimiter } from "../src/rate-limit.js";
-import { callTool, getToken, mcpRequest, pkce } from "./helpers.js";
+import {
+  callTool,
+  getToken,
+  getTokenPair,
+  issueViaProvider,
+  mcpRequest,
+  toolText as text,
+} from "./helpers.js";
 
 const BASE_URL = "https://example.test";
 const RESOURCE = `${BASE_URL}/mcp`;
@@ -76,37 +83,6 @@ function postAuthorize(
   );
 }
 
-/** Full flow through HTTP; returns the raw token response plus the client id. */
-async function login(app: ReturnType<typeof makeApp>, scope = "read") {
-  const clientId = await register(app);
-  const { challenge, verifier } = await pkce();
-  const auth = await postAuthorize(app, {
-    client_id: clientId,
-    code_challenge: challenge,
-    scope,
-    email: "a@b.c",
-  });
-  const code = new URL(auth.headers.get("location")!).searchParams.get("code")!;
-  const res = await app.request("/token", {
-    method: "POST",
-    headers: { "content-type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      grant_type: "authorization_code",
-      code,
-      client_id: clientId,
-      redirect_uri: "https://app/cb",
-      code_verifier: verifier,
-      resource: RESOURCE,
-    }).toString(),
-  });
-  const tokens = (await res.json()) as {
-    access_token: string;
-    refresh_token: string;
-    expires_in: number;
-  };
-  return { clientId, ...tokens };
-}
-
 /** Wrap a store so every key written is recorded. */
 function recordingStorage(): KvLike & { keys: string[]; values: string[] } {
   const inner = createMemoryStorage();
@@ -123,24 +99,6 @@ function recordingStorage(): KvLike & { keys: string[]; values: string[] } {
       return inner.put(k, v, o);
     },
   };
-}
-
-const text = (r: unknown) => (r as { content: Array<{ text: string }> }).content[0]!.text;
-
-async function issueViaProvider(p: ReturnType<typeof createOAuthProvider>, resource = RESOURCE) {
-  const { clientId } = await p.registerClient({ redirectUris: ["https://app/cb"] });
-  const { challenge, verifier } = await pkce();
-  const { code } = await p.issueAuthCode({
-    clientId,
-    redirectUri: "https://app/cb",
-    codeChallenge: challenge,
-    scope: ["read"],
-    userId: "user-1",
-    resource,
-  });
-  const exchange = (codeVerifier = verifier) =>
-    p.exchangeCode({ code, clientId, redirectUri: "https://app/cb", codeVerifier, resource });
-  return { clientId, code, exchange };
 }
 
 // ─── Login page ───────────────────────────────────────────────────────────────
@@ -349,7 +307,7 @@ describe("token family revocation", () => {
     const storage = createMemoryStorage();
     const a = createOAuthProvider({ storage, scopes: SCOPES, baseUrl: BASE_URL });
     const b = createOAuthProvider({ storage, scopes: SCOPES, baseUrl: "https://other.test" });
-    const t = await (await issueViaProvider(a, "")).exchange();
+    const t = await (await issueViaProvider(a, { resource: "" })).exchange();
     expect(await a.verifyAccessToken(t.accessToken)).not.toBeNull();
     // Same KV namespace, different server: the audience check must not be skipped.
     expect(await b.verifyAccessToken(t.accessToken)).toBeNull();
@@ -374,7 +332,7 @@ describe("token family revocation", () => {
 
   it("createMcpServer passes tokenTtl through to /token", async () => {
     const app = makeApp({ tokenTtl: { accessTokenSeconds: 120 } });
-    expect((await login(app)).expires_in).toBe(120);
+    expect((await getTokenPair(app)).expiresIn).toBe(120);
   });
 });
 
@@ -592,7 +550,7 @@ describe("audit hooks", () => {
   it("includes userId on token_issued, token_refreshed and token_revoked", async () => {
     const events: Array<{ event: string; userId?: string }> = [];
     const app = makeApp({ hooks: { onAudit: async (e) => void events.push(e) } });
-    const { clientId, refresh_token } = await login(app);
+    const { clientId, refreshToken: refresh_token } = await getTokenPair(app);
     const refreshed = (await (
       await app.request("/token", {
         method: "POST",
@@ -686,7 +644,7 @@ describe("waitUntil", () => {
 describe("waitUntil guard", () => {
   it("ignores an execution context without a callable waitUntil", async () => {
     const app = makeApp({ hooks: { onAudit: async () => {} } });
-    const { clientId } = await login(app);
+    const { clientId } = await getTokenPair(app);
     expect(clientId).toBeTruthy();
     const res = await app.request(
       "/register",

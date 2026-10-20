@@ -11,7 +11,7 @@ import { createOAuthProvider } from "../src/oauth/provider.js";
 import { createRateLimiter } from "../src/rate-limit.js";
 import { mountOAuthRoutes } from "../src/oauth/routes.js";
 import { renderAuthorizePage } from "../src/identity/page.js";
-import { pkce, callTool, getToken } from "./helpers.js";
+import { callTool, getToken, issueViaProvider, pkce } from "./helpers.js";
 import type { IdentityConfig } from "../src/config.js";
 
 const BASE_URL = "https://example.test";
@@ -20,28 +20,6 @@ const SCOPES = [
   { name: "account:read", default: true },
   { name: "write", default: true },
 ];
-
-/** Drive register → authorize → exchange directly against a provider; return the pair. */
-async function issueViaProvider(p: ReturnType<typeof createOAuthProvider>) {
-  const { clientId } = await p.registerClient({ redirectUris: ["https://app/cb"] });
-  const { challenge, verifier } = await pkce();
-  const { code } = await p.issueAuthCode({
-    clientId,
-    redirectUri: "https://app/cb",
-    codeChallenge: challenge,
-    scope: ["account:read"],
-    userId: "user-1",
-    resource: RESOURCE,
-  });
-  const tokens = await p.exchangeCode({
-    code,
-    clientId,
-    redirectUri: "https://app/cb",
-    codeVerifier: verifier,
-    resource: RESOURCE,
-  });
-  return { tokens, clientId };
-}
 
 // ─── Credential-validity oracle on POST /authorize ────────────────────────────
 
@@ -98,7 +76,8 @@ describe("refresh-token reuse detection", () => {
       scopes: SCOPES,
       baseUrl: BASE_URL,
     });
-    const { tokens: t1, clientId } = await issueViaProvider(p);
+    const { exchange, clientId } = await issueViaProvider(p);
+    const t1 = await exchange();
 
     // Legit rotation t1 → t2.
     const t2 = await p.refresh({ refreshToken: t1.refreshToken, clientId });
@@ -122,7 +101,7 @@ describe("token/code expiry is enforced in-code even when storage ignores TTL", 
     // provider's in-code check should reject the stale token.
     const storage = createMemoryStorage(() => 0);
     const p = createOAuthProvider({ storage, scopes: SCOPES, baseUrl: BASE_URL, now: () => clock });
-    const { tokens } = await issueViaProvider(p);
+    const tokens = await (await issueViaProvider(p)).exchange();
 
     expect(await p.verifyAccessToken(tokens.accessToken)).not.toBeNull();
 

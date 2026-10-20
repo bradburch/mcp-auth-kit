@@ -39,7 +39,7 @@ export type {
 // For adopters who need to compose their own Hono app (custom middleware,
 // sub-path mounting, etc.) rather than using createMcpServer directly.
 
-export { createOAuthProvider } from "./oauth/provider.js";
+export { createOAuthProvider, OAuthError } from "./oauth/provider.js";
 export type {
   OAuthProvider,
   OAuthProviderConfig,

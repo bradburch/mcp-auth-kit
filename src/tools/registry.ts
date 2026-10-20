@@ -37,26 +37,20 @@ function isGranted(tool: AnyTool, grantedScopes: string[]): boolean {
 }
 
 /**
- * Register EVERY configured tool onto `server`, regardless of `grantedScopes` — scope gating
+ * Register EVERY configured tool onto `server`, regardless of `ctx.scopes` — scope gating
  * happens at dispatch time via each tool's `scopeChallenge` (see file header).
  */
-export function registerTools(
-  server: McpServer,
-  tools: AnyTool[],
-  ctx: ToolContext,
-  grantedScopes: string[],
-): void {
+export function registerTools(server: McpServer, tools: AnyTool[], ctx: ToolContext): void {
   const grantedMutating: MutatingToolDef[] = [];
 
   for (const tool of tools) {
     if (isMutating(tool)) {
       // Two-phase: the tool call previews; execution happens via confirm_request.
       registerMutatingTool(server, tool, ctx);
-      if (isGranted(tool, grantedScopes)) grantedMutating.push(tool);
+      if (isGranted(tool, ctx.scopes)) grantedMutating.push(tool);
       continue;
     }
 
-    const readTool = tool as ToolDef;
     server.registerTool(
       tool.name,
       {
@@ -68,7 +62,7 @@ export function registerTools(
       async (input: unknown) => {
         fireToolCall(ctx, tool.name, input);
         try {
-          return toToolResult(await readTool.handler(input, ctx));
+          return toToolResult(await tool.handler(input, ctx));
         } catch (e) {
           return toolFailure(ctx, tool.name, "handler", e);
         }

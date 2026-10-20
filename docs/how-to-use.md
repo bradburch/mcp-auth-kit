@@ -46,7 +46,8 @@ Node **22+** is required, and your project must be ESM (`"type": "module"`).
 > type annotations (`type` imports, `: Foo` annotations) is plain ESM JavaScript: name the file
 > `server.js` and run `node server.js`. `defineTool` is only a typing helper — in JS you can
 > pass the tool objects directly. Node 22.18+ / 23.6+ can also run `.ts` files directly via
-> built-in type stripping, so `tsx` is optional there too.
+> built-in type stripping (`node run.ts`) — relative imports must then name the real `.ts`
+> file (`./server.ts`, as in §3), not `./server.js`.
 
 ## 2. A minimal server
 
@@ -87,22 +88,25 @@ export const app = createMcpServer({
 
 ```bash
 npm install @hono/node-server   # runtime dependency
-npm install --save-dev tsx      # optional: Node 22.18+ runs .ts directly, or use .js files
 ```
 
 ```ts
 // run.ts
 import { serve } from "@hono/node-server";
-import { app } from "./server.js";
+import { app } from "./server.ts"; // the .ts extension is what lets plain `node` resolve it
 
 serve({ fetch: app.fetch, port: 3000 }, () => console.log("MCP server on http://localhost:3000"));
 ```
 
 ```bash
-npx tsx run.ts
+node run.ts   # Node 22.18+ / 23.6+ (built-in type stripping); older Node: npm i -D tsx && npx tsx run.ts
 # sanity check discovery:
 curl -s http://localhost:3000/.well-known/oauth-authorization-server | jq
 ```
+
+If you type-check with `tsc`, importing `./server.ts` needs `"allowImportingTsExtensions": true`
+with `"noEmit": true` (or `"rewriteRelativeImportExtensions": true` if `tsc` emits JS). In plain
+JS, name the files `.js` and import `./server.js`.
 
 A complete runnable example lives in [`examples/appointments/`](../examples/appointments/).
 
@@ -175,55 +179,103 @@ call `provider.issueAuthCode` yourself from wherever your own login flow lands:
 > after yours but is simply never hit, since your flow never submits to it — harmless, unused.)
 
 ```ts
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
+import { z } from "zod";
 import {
   createOAuthProvider,
-  mountOAuthRoutes,
-  mountDiscovery,
+  createRateLimiter,
   createMemoryStorage,
+  defineTool,
+  handleMcpRequest,
+  mountDiscovery,
+  mountOAuthRoutes,
+  OAuthError,
 } from "mcp-oauth-kit";
 
 const baseUrl = "https://mcp.example.com";
 const storage = createMemoryStorage(); // swap for production storage
 const scopes = [{ name: "account:read", default: true }];
+const tools = [
+  defineTool({
+    name: "whoami",
+    description: "Return the caller's user id.",
+    inputSchema: z.object({}),
+    handler: async (_input, ctx) => `You are ${ctx.userId}`,
+  }),
+];
+
+// Stand-in for your existing SSO/SAML/OIDC session check — return the user's stable id.
+const authenticateUser = async (_c: Context): Promise<string> => "user-123";
 
 const provider = createOAuthProvider({ storage, scopes, baseUrl });
-const app = new Hono();
+const rateLimiter = createRateLimiter({ storage }); // optional `config: RateLimitConfig`
+export const app = new Hono();
 
 mountDiscovery(app, { baseUrl, scopes });
 
 // Register YOUR /authorize BEFORE mountOAuthRoutes — Hono dispatches to the first handler
 // registered for a given method + path, so this shadows the kit's bundled GET /authorize.
-// Your own login flow lands here after it has already authenticated the user via SSO/SAML/etc.
 app.get("/authorize", async (c) => {
-  const userId = await mySsoMiddleware(c); // however you already authenticate users
-  const { code } = await provider.issueAuthCode({
-    clientId: c.req.query("client_id")!,
-    redirectUri: c.req.query("redirect_uri")!,
-    codeChallenge: c.req.query("code_challenge")!,
-    scope: provider.normalizeScopes((c.req.query("scope") ?? "").split(" ")),
-    userId,
-    resource: c.req.query("resource") ?? "",
-  });
-  const location = new URL(c.req.query("redirect_uri")!);
-  location.searchParams.set("code", code);
-  const state = c.req.query("state");
-  if (state) location.searchParams.set("state", state);
-  // RFC 9207: mountDiscovery advertises authorization_response_iss_parameter_supported,
-  // so a compliant client will reject a redirect that's missing this — see routes.ts.
-  location.searchParams.set("iss", baseUrl);
-  return c.redirect(location.toString(), 302);
+  const q = (name: string) => c.req.query(name) ?? "";
+  if (
+    q("response_type") !== "code" ||
+    !q("code_challenge") ||
+    q("code_challenge_method") !== "S256"
+  ) {
+    return c.json({ error: "invalid_request" }, 400);
+  }
+  const userId = await authenticateUser(c);
+  try {
+    // Throws OAuthError on an unknown client_id, unregistered redirect_uri, or wrong resource.
+    const { code } = await provider.issueAuthCode({
+      clientId: q("client_id"),
+      redirectUri: q("redirect_uri"),
+      codeChallenge: q("code_challenge"),
+      scope: provider.normalizeScopes(q("scope").split(" ")),
+      userId,
+      resource: q("resource"),
+    });
+    const location = new URL(q("redirect_uri")); // validated by issueAuthCode
+    location.searchParams.set("code", code);
+    if (q("state")) location.searchParams.set("state", q("state"));
+    // RFC 9207: discovery advertises authorization_response_iss_parameter_supported, so a
+    // compliant client rejects a redirect without `iss`.
+    location.searchParams.set("iss", baseUrl);
+    return c.redirect(location.toString(), 302);
+  } catch (e) {
+    // Never redirect to an unvalidated redirect_uri — answer the error directly.
+    if (e instanceof OAuthError)
+      return c.json({ error: e.code, error_description: e.message }, 400);
+    throw e;
+  }
 });
 
-// Omit `identity` here — mountOAuthRoutes's own GET /authorize (unreachable, shadowed above)
-// would otherwise reject with "No identity provider configured"; its POST /register, /token,
-// and /revoke are unaffected and still handle the rest of the OAuth flow normally.
-mountOAuthRoutes(app, { provider, baseUrl });
+// No `identity`: the kit's GET /authorize is shadowed above (its POST /authorize is never hit).
+// /register, /token and /revoke work as usual, rate-limited per IP by `rateLimiter` — pass
+// `ipExtractor` too when you're not behind Cloudflare.
+mountOAuthRoutes(app, { provider, baseUrl, rateLimiter, scopes });
+
+// The MCP transport, with the same deps createMcpServer passes it.
+app.post("/mcp", (c) =>
+  handleMcpRequest(c.req.raw, {
+    provider,
+    rateLimiter,
+    storage,
+    tools,
+    baseUrl,
+    serverName: "my-server",
+    serverVersion: "1.0.0",
+    env: c.env, // becomes ctx.env
+    hooks: {},
+    defaultScopes: scopes.filter((s) => s.default).map((s) => s.name),
+    allowedOrigins: [], // browser Origins allowed to call /mcp
+    // waitUntil: on Workers, (p) => c.executionCtx.waitUntil(p)
+  }),
+);
 ```
 
-The MCP transport (`POST /mcp`) and tool registration are unaffected by this — mount them
-exactly as `createMcpServer` does internally (see its source for the six-line wiring), or
-just call `handleMcpRequest` directly per the README's low-level API reference.
+Serve `app` exactly as in §3. `createMcpServer` additionally answers `GET`/`DELETE /mcp` with
+`405`; add those routes if you want the same behavior.
 
 ## 5. Scopes and scope gating
 
@@ -325,15 +377,16 @@ What `confirm_request` returns:
 - **Thrown error in `execute`** — `isError: true` with the `ToolError` message, or a generic
   "Tool execution failed" for anything else.
 
-`confirm_request` is registered only when at least one mutating tool is granted to the
-caller; the mutating tools themselves are always listed regardless of grant — see the
-README's scope-gating section for why. So if none of your mutating tools are granted to a
-given caller, `confirm_request` won't appear in that caller's `tools/list` either.
+`confirm_request` is registered only when the caller is granted at least one mutating tool's
+scope; the mutating tools themselves are always listed regardless of grant (for step-up
+discovery, §5). A caller with no mutating tool granted can never get a preview token, so
+`confirm_request` would have nothing to confirm and doesn't appear in their `tools/list`.
 
 ## 7. Drive the full OAuth + MCP flow (end to end)
 
 This is what a spec-compliant MCP client does under the hood. You can reproduce it with `curl`
-to verify your server. It uses PKCE (S256).
+to verify your server. It uses PKCE (S256), and assumes the §2 server with §5's `scopes`
+and §6's `book_slot` tool added.
 
 > **MCP request shape (2026-07-28).** `POST /mcp` speaks the 2026-07-28 revision: every
 > request carries the `MCP-Protocol-Version`, `Mcp-Method` (and for `tools/call`, `Mcp-Name`)
@@ -356,6 +409,7 @@ CLIENT_ID=$(curl -s -X POST $BASE/register \
   -d '{"redirect_uris":["http://localhost:9999/cb"]}' | jq -r .client_id)
 
 # (c) Log in — submit the identity form. On success the server 302-redirects with ?code=...
+#     `scope` asks for the non-default "write" scope (§5) so book_slot can run below.
 CODE=$(curl -s -i -X POST $BASE/authorize \
   -H 'content-type: application/x-www-form-urlencoded' \
   --data-urlencode "response_type=code" \
@@ -364,8 +418,10 @@ CODE=$(curl -s -i -X POST $BASE/authorize \
   --data-urlencode "code_challenge=$CHALLENGE" \
   --data-urlencode "code_challenge_method=S256" \
   --data-urlencode "resource=$BASE/mcp" \
+  --data-urlencode "scope=account:read write" \
   --data-urlencode "email=you@example.com" \
   | grep -i '^location:' | sed -E 's/.*[?&]code=([^&[:space:]]+).*/\1/')
+echo "$CODE"   # empty = login rejected (verify returned null or a form field is missing)
 
 # (d) Exchange the code for tokens
 ACCESS=$(curl -s -X POST $BASE/token \
@@ -389,7 +445,45 @@ curl -s -X POST $BASE/mcp \
        "_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28",
                 "io.modelcontextprotocol/clientInfo":{"name":"curl","version":"1"},
                 "io.modelcontextprotocol/clientCapabilities":{}}}}' | jq
+# → {"result":{"content":[{"type":"text","text":"You are you@example.com"}],"resultType":"complete",
+#    "_meta":{"io.modelcontextprotocol/serverInfo":{...}}},"jsonrpc":"2.0","id":1}
+
+# The same _meta envelope for the next two calls:
+META='"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28",
+  "io.modelcontextprotocol/clientInfo":{"name":"curl","version":"1"},
+  "io.modelcontextprotocol/clientCapabilities":{}}'
+
+# (f) Preview a mutating tool (book_slot from §6) — nothing is booked yet
+TOKEN=$(curl -s -X POST $BASE/mcp \
+  -H "authorization: Bearer $ACCESS" \
+  -H 'content-type: application/json' \
+  -H 'accept: application/json, text/event-stream' \
+  -H 'mcp-protocol-version: 2026-07-28' \
+  -H 'mcp-method: tools/call' \
+  -H 'mcp-name: book_slot' \
+  -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"book_slot",
+       "arguments":{"slot":"09:00"},'"$META"'}}' \
+  | jq -r .result.structuredContent.confirmationToken)
+# structuredContent is {"status":"preview","summary":"Book 09:00","confirmationToken":"..."}
+echo "$TOKEN"
+
+# (g) Confirm it — execute runs now
+curl -s -X POST $BASE/mcp \
+  -H "authorization: Bearer $ACCESS" \
+  -H 'content-type: application/json' \
+  -H 'accept: application/json, text/event-stream' \
+  -H 'mcp-protocol-version: 2026-07-28' \
+  -H 'mcp-method: tools/call' \
+  -H 'mcp-name: confirm_request' \
+  -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"confirm_request",
+       "arguments":{"confirmationToken":"'"$TOKEN"'","idempotencyKey":"'"$(openssl rand -hex 16)"'"},
+       '"$META"'}}' | jq
+# → {"result":{"content":[{"type":"text","text":"Booked 09:00."}],"resultType":"complete",...}, ...}
 ```
+
+> **Using §4's email + code identity?** Step (c) must submit every `identity.fields` entry —
+> add `--data-urlencode "code=123456"` — or `verify` rejects the login, the response has no
+> `location:` header, and `CODE` comes back empty (which then fails every later step).
 
 > **`iss` on the redirect.** Step (c)'s 302 now also carries `&iss=<baseUrl>` (RFC 9207) —
 > a compliant client checks this matches the issuer it expects before proceeding, to catch
@@ -401,8 +495,9 @@ curl -s -X POST $BASE/mcp \
 > use an `https://` URL (hosting a `{ client_id, redirect_uris, ... }` JSON document) as
 > `CLIENT_ID` directly — see the Config reference in the README.
 
-In a real MCP client (Claude, an IDE plugin, etc.) you just point it at `http://localhost:3000`
-and it performs steps (a)–(e) for you.
+In a real MCP client (Claude, an IDE plugin, etc.) you just point it at
+`http://localhost:3000/mcp` and it performs steps (a)–(d) for you, then makes MCP calls like
+(e)–(g).
 
 ### Connect with the TypeScript SDK client
 

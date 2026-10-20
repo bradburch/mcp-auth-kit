@@ -255,3 +255,28 @@ describe("POST /mcp — Mcp-Method / Mcp-Name header validation", () => {
     expect(res.status).toBe(200);
   });
 });
+
+describe("POST /mcp — modern request with an unparseable body", () => {
+  it("still gets the SDK's own JSON parse error", async () => {
+    const app = createMcpServer({
+      baseUrl,
+      storage: createMemoryStorage(),
+      scopes: [{ name: "account:read", default: true }],
+      identity: { fields: [{ name: "email", label: "Email" }], verify: async () => "u" },
+      tools: [],
+    });
+    const token = await getToken(app);
+    const res = await app.request("/mcp", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${token}`,
+        "content-type": "application/json",
+        accept: "application/json, text/event-stream",
+        "mcp-protocol-version": "2026-07-28",
+        "mcp-method": "tools/list",
+      },
+      body: "{not json",
+    });
+    expect({ status: res.status, body: await res.text() }).toMatchSnapshot();
+  });
+});

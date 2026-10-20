@@ -2,28 +2,26 @@
 // Provides mountOAuthRoutes(app, deps) for wiring POST /register, GET+POST /authorize,
 // POST /token, POST /revoke onto a Hono app.
 import type { Context, Hono } from "hono";
-import type { OAuthProvider } from "./provider.js";
+import { OAuthError, type OAuthProvider, type TokenPair } from "./provider.js";
 import type { IdentityConfig, ObservabilityHooks, ScopeConfig } from "../config.js";
 import { renderAuthorizePage, type AuthorizePageParams } from "../identity/page.js";
-
-import type { RateLimiter } from "../rate-limit.js";
+import { retryAfterSeconds, type RateLimiter } from "../rate-limit.js";
 import { extractClientIp } from "../http/client-ip.js";
 import { readCappedBody } from "../http/body-limit.js";
 import { fireAndForget, waitUntilFor } from "../http/wait-until.js";
-import { hasFragment, isAllowedRedirectUriScheme } from "./redirect-uri.js";
+import { redirectUriProblem } from "./redirect-uri.js";
 
 // ─── Security header constants ───────────────────────────────────────────────
 
 /** RFC 6749 §5.1 — token responses MUST NOT be cached. */
-const TOKEN_CACHE_HEADERS = {
-  "Cache-Control": "no-store",
-  Pragma: "no-cache",
-} as const;
+const TOKEN_HEADERS = { "Cache-Control": "no-store", Pragma: "no-cache" };
 
 /** CSP for the authorize form page. img-src https: allows https logo images.
  *  frame-ancestors 'none' prevents the login form from being framed (clickjacking). */
-const AUTHORIZE_CSP =
-  "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; img-src https:; frame-ancestors 'none'";
+const AUTHORIZE_HEADERS = {
+  "Content-Security-Policy":
+    "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; img-src https:; frame-ancestors 'none'",
+};
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -70,38 +68,16 @@ async function readBodyParsed(req: Request): Promise<Record<string, string> | Re
   }
 }
 
-/**
- * Build the AuthorizePageParams shared by the GET (initial render) and POST (error
- * re-render) paths from a flat OAuth-param map, optionally with an error + prefill.
- */
-function authorizePageParams(
-  oauthParams: Record<string, string>,
-  extra?: {
-    error?: string;
-    prefill?: Record<string, string>;
-    grantedScopes?: AuthorizePageParams["grantedScopes"];
-  },
-): AuthorizePageParams {
-  return {
-    response_type: oauthParams.response_type ?? "code",
-    client_id: oauthParams.client_id ?? "",
-    redirect_uri: oauthParams.redirect_uri ?? "",
-    code_challenge: oauthParams.code_challenge ?? "",
-    code_challenge_method: oauthParams.code_challenge_method ?? "S256",
-    state: oauthParams.state ?? "",
-    resource: oauthParams.resource ?? "",
-    scope: oauthParams.scope ?? "",
-    error: extra?.error,
-    prefill: extra?.prefill,
-    grantedScopes: extra?.grantedScopes,
-  };
-}
+/** The 8 standard authorize params, as threaded through the login form. */
+type OAuthParams = Omit<AuthorizePageParams, "error" | "prefill" | "grantedScopes"> & {
+  scope: string;
+};
 
 /**
  * Extract the 8 standard OAuth params from a flat string map (query string or form body).
  * Shared by GET /authorize (query params) and POST /authorize (form body).
  */
-function extractOAuthParams(source: Record<string, string>): Record<string, string> {
+function extractOAuthParams(source: Record<string, string>): OAuthParams {
   return {
     response_type: source.response_type ?? "",
     client_id: source.client_id ?? "",
@@ -168,6 +144,16 @@ export function mountOAuthRoutes(
       description: scopes?.find((s) => s.name === name)?.description,
     }));
 
+  /** Login-page params: the request's OAuth params plus the scopes it would be granted. */
+  const pageParams = (
+    oauthParams: OAuthParams,
+    extra?: Pick<AuthorizePageParams, "error" | "prefill">,
+  ): AuthorizePageParams => ({
+    ...oauthParams,
+    ...extra,
+    grantedScopes: grantedScopes(oauthParams.scope),
+  });
+
   /**
    * Apply a per-IP rate-limit bucket. Returns a 429 Response (naming the `RateLimitConfig`
    * key that was exhausted) when the limit is hit, or null to proceed. No-op when no rate
@@ -176,20 +162,32 @@ export function mountOAuthRoutes(
   const ipRateLimited = async (
     c: Context,
     limit: "ipAuthorizePerHour" | "ipTokenPerHour",
-    bucket: (rl: RateLimiter, ip: string) => Promise<boolean>,
   ): Promise<Response | null> => {
     if (!rateLimiter) return null;
-    const ok = await bucket(rateLimiter, clientIp(c));
+    const ip = clientIp(c);
+    const ok =
+      limit === "ipTokenPerHour"
+        ? await rateLimiter.checkIpToken(ip)
+        : await rateLimiter.checkIpAuthorize(ip);
     if (ok) return null;
-    c.header("Retry-After", String(rateLimiter.secondsUntilReset?.() ?? 3600));
+    c.header("Retry-After", String(retryAfterSeconds(rateLimiter)));
     return c.json(oauthError("temporarily_unavailable", `rate limit exceeded (${limit})`), 429);
   };
+
+  // Security headers on every response from these paths — including 413/429 early returns.
+  const withHeaders =
+    (headers: Record<string, string>) => async (c: Context, next: () => Promise<void>) => {
+      for (const [k, v] of Object.entries(headers)) c.header(k, v);
+      await next();
+    };
+  app.use("/authorize", withHeaders(AUTHORIZE_HEADERS));
+  app.use("/token", withHeaders(TOKEN_HEADERS));
 
   // ── POST /register ─────────────────────────────────────────────────────────
 
   app.post("/register", async (c) => {
     // Per-IP rate limit: unauthenticated DCR is a storage-exhaustion DoS vector.
-    const limited = await ipRateLimited(c, "ipTokenPerHour", (rl, ip) => rl.checkIpToken(ip));
+    const limited = await ipRateLimited(c, "ipTokenPerHour");
     if (limited) return limited;
 
     const capped = await readCappedBody(c.req.raw);
@@ -203,11 +201,13 @@ export function mountOAuthRoutes(
     }
 
     const redirectUris = body.redirect_uris;
-    if (!redirectUris || !Array.isArray(redirectUris) || redirectUris.length === 0) {
+    if (!Array.isArray(redirectUris) || redirectUris.length === 0) {
       return c.json(oauthError("invalid_client_metadata", "redirect_uris required"), 400);
     }
 
-    if ((redirectUris as string[]).some((u: string) => hasFragment(u))) {
+    // Same rules as Client ID Metadata Documents (redirect-uri.ts); fragments are reported
+    // first, then each URI's scheme.
+    if ((redirectUris as string[]).some((u) => redirectUriProblem(u) === "fragment")) {
       return c.json(
         oauthError("invalid_redirect_uri", "redirect_uris must not contain fragments"),
         400,
@@ -219,7 +219,7 @@ export function mountOAuthRoutes(
     try {
       parsedUris = (redirectUris as string[]).map((u: string) => {
         const url = new URL(u);
-        if (!isAllowedRedirectUriScheme(u)) {
+        if (redirectUriProblem(u) !== null) {
           throw new Error(`Invalid redirect URI scheme: ${url.protocol}`);
         }
         return url.toString();
@@ -280,10 +280,8 @@ export function mountOAuthRoutes(
   // ── GET /authorize ─────────────────────────────────────────────────────────
 
   app.get("/authorize", async (c) => {
-    c.header("Content-Security-Policy", AUTHORIZE_CSP);
-
     const oauthParams = extractOAuthParams(
-      Object.fromEntries(new URL(c.req.url).searchParams.entries()) as Record<string, string>,
+      Object.fromEntries(new URL(c.req.url).searchParams.entries()),
     );
     const {
       client_id: clientId,
@@ -316,23 +314,14 @@ export function mountOAuthRoutes(
     ) {
       return c.text("Unknown client_id or unregistered redirect_uri", 400);
     }
-    return c.html(
-      renderAuthorizePage(
-        identity,
-        authorizePageParams(oauthParams, { grantedScopes: grantedScopes(oauthParams.scope ?? "") }),
-      ),
-    );
+    return c.html(renderAuthorizePage(identity, pageParams(oauthParams)));
   });
 
   // ── POST /authorize ────────────────────────────────────────────────────────
 
   app.post("/authorize", async (c) => {
-    c.header("Content-Security-Policy", AUTHORIZE_CSP);
-
     // Per-IP rate limit: brute-force guard on credential submissions.
-    const limited = await ipRateLimited(c, "ipAuthorizePerHour", (rl, ip) =>
-      rl.checkIpAuthorize(ip),
-    );
+    const limited = await ipRateLimited(c, "ipAuthorizePerHour");
     if (limited) return limited;
 
     const formData = await readBodyParsed(c.req.raw);
@@ -368,37 +357,24 @@ export function mountOAuthRoutes(
       return c.text("Unsupported code_challenge_method. Only S256 is supported.", 400);
     }
 
+    // No identity provider — reject (can't issue a code without a userId).
+    if (!identity) {
+      return c.json(oauthError("access_denied", "No identity provider configured"), 400);
+    }
+
     // Collect identity field values from form body. Passwords are passed through verbatim —
     // trimming would silently change a secret with leading/trailing spaces.
-    const fields = identity?.fields ?? [];
     const identityFields: Record<string, string> = {};
-    for (const f of fields) {
+    for (const f of identity.fields) {
       identityFields[f.name] =
         f.type === "password" ? String(formData[f.name] ?? "") : getString(f.name);
     }
 
-    function renderError(error: string) {
-      if (!identity) {
-        return c.json(oauthError("access_denied", "No identity provider configured"), 400);
-      }
-      return c.html(
-        renderAuthorizePage(
-          identity,
-          authorizePageParams(oauthParams, {
-            error,
-            prefill: identityFields,
-            grantedScopes: grantedScopes(scope),
-          }),
-        ),
+    const renderError = (error: string) =>
+      c.html(
+        renderAuthorizePage(identity, pageParams(oauthParams, { error, prefill: identityFields })),
         401,
       );
-    }
-
-    // Verify identity if an identity provider is configured.
-    if (!identity) {
-      // No identity provider — reject (can't issue code without a userId).
-      return c.json(oauthError("access_denied", "No identity provider configured"), 400);
-    }
 
     // Validate the client BEFORE checking credentials, and return the SAME error for a
     // bad client as for bad credentials. Otherwise a bogus client_id (no registration
@@ -418,14 +394,13 @@ export function mountOAuthRoutes(
       return renderError(INVALID);
     }
 
-    // Issue auth code via provider (validates client + redirectUri internally).
+    // Issue auth code via provider (validates client + redirectUri, normalizes scopes).
     try {
-      const normalizedScopes = provider.normalizeScopes(scope ? scope.split(" ") : []);
       const { code } = await provider.issueAuthCode({
         clientId,
         redirectUri,
         codeChallenge,
-        scope: normalizedScopes,
+        scope: scope ? scope.split(" ") : [],
         userId,
         resource,
       });
@@ -448,12 +423,8 @@ export function mountOAuthRoutes(
   // ── POST /token ────────────────────────────────────────────────────────────
 
   app.post("/token", async (c) => {
-    // RFC 6749 §5.1: token responses MUST NOT be cached.
-    c.header("Cache-Control", TOKEN_CACHE_HEADERS["Cache-Control"]);
-    c.header("Pragma", TOKEN_CACHE_HEADERS["Pragma"]);
-
     // Per-IP rate limit on the token endpoint.
-    const limited = await ipRateLimited(c, "ipTokenPerHour", (rl, ip) => rl.checkIpToken(ip));
+    const limited = await ipRateLimited(c, "ipTokenPerHour");
     if (limited) return limited;
 
     const body = await readBodyParsed(c.req.raw);
@@ -500,17 +471,8 @@ export function mountOAuthRoutes(
         );
       }
     } catch (e) {
+      if (e instanceof OAuthError) return c.json(oauthError(e.code, e.message), e.status);
       const msg = e instanceof Error ? e.message : "Token exchange failed";
-      // Map error messages to OAuth error codes + HTTP status.
-      if (msg.includes("Invalid or expired") || msg.includes("PKCE")) {
-        return c.json(oauthError("invalid_grant", msg), 400);
-      }
-      if (msg.includes("invalid_client") || msg.includes("Client ID mismatch")) {
-        return c.json(oauthError("invalid_client", msg), 401);
-      }
-      if (msg.includes("Resource mismatch")) {
-        return c.json(oauthError("invalid_target", msg), 400);
-      }
       return c.json(oauthError("invalid_grant", msg), 400);
     }
   });
@@ -519,7 +481,7 @@ export function mountOAuthRoutes(
 
   app.post("/revoke", async (c) => {
     // Per-IP rate limit: unauthenticated endpoint, guard against abuse.
-    const limited = await ipRateLimited(c, "ipTokenPerHour", (rl, ip) => rl.checkIpToken(ip));
+    const limited = await ipRateLimited(c, "ipTokenPerHour");
     if (limited) return limited;
 
     const body = await readBodyParsed(c.req.raw);
@@ -537,9 +499,8 @@ export function mountOAuthRoutes(
       // RFC 7009 §2.2: successful revocation always returns 200.
       return c.body(null, 200);
     } catch (e) {
-      const msg = e instanceof Error ? e.message : "";
       // RFC 7009 §2.2.1: token belonging to a different client → 401.
-      if (msg.includes("Token was not issued to this client")) {
+      if (e instanceof OAuthError && e.code === "unauthorized_client") {
         return c.json(
           oauthError("unauthorized_client", "Token was issued to a different client"),
           401,
@@ -552,8 +513,6 @@ export function mountOAuthRoutes(
 }
 
 // ─── Internal helpers ─────────────────────────────────────────────────────────
-
-import type { TokenPair } from "./provider.js";
 
 /** Map the internal TokenPair to the standard OAuth JSON response shape. */
 function tokenPairToResponse(tokens: TokenPair) {

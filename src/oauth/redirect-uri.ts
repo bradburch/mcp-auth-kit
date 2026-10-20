@@ -4,31 +4,27 @@
 // can't bypass rules that DCR enforces (fragment-bearing URIs, non-https/non-localhost
 // schemes) just because it arrived via a different registration mechanism.
 
-/** True if the URI has a fragment component — redirect_uris must not (RFC 6749 §3.1.2). */
-export function hasFragment(uri: string): boolean {
-  try {
-    return new URL(uri).hash !== "";
-  } catch {
-    return false;
-  }
+/** The hosts where plain http is allowed, for local development (redirect URIs and `baseUrl`). */
+export function isLoopbackHost(hostname: string): boolean {
+  return hostname === "localhost" || hostname === "127.0.0.1";
 }
 
-/**
- * True if `uri` uses an allowed redirect scheme: https always, or http restricted to
- * localhost/127.0.0.1 for local development.
- */
-export function isAllowedRedirectUriScheme(uri: string): boolean {
+/** Why `uri` can't be a redirect_uri, or null when it's fine. */
+export function redirectUriProblem(uri: string): "malformed" | "fragment" | "scheme" | null {
   let url: URL;
   try {
     url = new URL(uri);
   } catch {
-    return false;
+    return "malformed";
   }
-  const isLocal = url.hostname === "localhost" || url.hostname === "127.0.0.1";
-  return url.protocol === "https:" || (url.protocol === "http:" && isLocal);
+  // RFC 6749 §3.1.2: redirect_uris must not have a fragment.
+  if (url.hash !== "") return "fragment";
+  const ok =
+    url.protocol === "https:" || (url.protocol === "http:" && isLoopbackHost(url.hostname));
+  return ok ? null : "scheme";
 }
 
 /** True if `uri` is well-formed, fragment-free, and uses an allowed scheme. */
 export function isValidRedirectUri(uri: string): boolean {
-  return !hasFragment(uri) && isAllowedRedirectUriScheme(uri);
+  return redirectUriProblem(uri) === null;
 }

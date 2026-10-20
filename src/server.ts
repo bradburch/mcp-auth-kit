@@ -1,6 +1,6 @@
 // Public factory: assemble an MCP server (OAuth + discovery + tool transport) as a Hono app.
 //
-// Wires together the pieces built in Tasks 4–7:
+// Wires together:
 //   - OAuth provider (DCR, PKCE, token issuance/rotation)
 //   - rate limiter (per-user tool calls, per-IP authorize/token)
 //   - discovery endpoints (RFC 8414 / RFC 9728)
@@ -14,6 +14,7 @@ import { mountDiscovery } from "./oauth/discovery.js";
 import { createRateLimiter } from "./rate-limit.js";
 import { handleMcpRequest, jsonRpcError, JSON_RPC_ERROR } from "./transport.js";
 import { waitUntilFor } from "./http/wait-until.js";
+import { isLoopbackHost } from "./oauth/redirect-uri.js";
 
 /** Default server identity reported to MCP clients (override via config.name / config.version). */
 const DEFAULT_SERVER_NAME = "mcp-oauth-kit";
@@ -28,8 +29,7 @@ function methodNotAllowed(message: string): Response {
 /** Security-considerations: "All authorization server endpoints MUST be served over HTTPS." */
 function assertHttpsBaseUrl(baseUrl: string): void {
   const url = new URL(baseUrl);
-  const isLocal = url.hostname === "localhost" || url.hostname === "127.0.0.1";
-  if (url.protocol !== "https:" && !isLocal) {
+  if (url.protocol !== "https:" && !isLoopbackHost(url.hostname)) {
     throw new Error(
       `baseUrl must be https:// (got "${baseUrl}") — http is only allowed for localhost/127.0.0.1 during local development.`,
     );
@@ -106,24 +106,23 @@ export function createMcpServer(config: McpServerConfig): Hono {
     scopes: config.scopes,
   });
 
-  const hooks = config.hooks ?? {};
+  // Everything but the runtime env/waitUntil is fixed for the server's lifetime.
+  const mcpDeps = {
+    provider,
+    rateLimiter,
+    storage: config.storage,
+    tools: config.tools,
+    baseUrl: config.baseUrl,
+    serverName: config.name ?? DEFAULT_SERVER_NAME,
+    serverVersion: config.version ?? DEFAULT_SERVER_VERSION,
+    hooks: config.hooks ?? {},
+    defaultScopes: config.scopes.filter((s) => s.default).map((s) => s.name),
+    allowedOrigins: config.allowedOrigins ?? [],
+  };
 
   // MCP transport — stateless (2026-07-28, with the SDK's 2025-era fallback).
   app.post("/mcp", (c) =>
-    handleMcpRequest(c.req.raw, {
-      provider,
-      rateLimiter,
-      storage: config.storage,
-      tools: config.tools,
-      baseUrl: config.baseUrl,
-      serverName: config.name ?? DEFAULT_SERVER_NAME,
-      serverVersion: config.version ?? DEFAULT_SERVER_VERSION,
-      env: c.env,
-      hooks,
-      defaultScopes: config.scopes.filter((s) => s.default).map((s) => s.name),
-      allowedOrigins: config.allowedOrigins ?? [],
-      waitUntil: waitUntilFor(c),
-    }),
+    handleMcpRequest(c.req.raw, { ...mcpDeps, env: c.env, waitUntil: waitUntilFor(c) }),
   );
 
   app.get("/mcp", () => methodNotAllowed("Stateless mode — use POST"));

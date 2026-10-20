@@ -8,7 +8,7 @@ import {
   tokenFamilyKey,
   cimdKey,
 } from "../storage/keys.js";
-import { sha256Hex, randomToken } from "../crypto.js";
+import { sha256Hex, randomToken, pkceS256Challenge } from "../crypto.js";
 import { fetchClientIdMetadata } from "./cimd.js";
 
 /** TTL constants in seconds. Access/refresh lifetimes are defaults — see `tokenTtl`. */
@@ -17,10 +17,25 @@ const TTL = {
   AUTH_CODE: 5 * 60, // 5 minutes
   ACCESS_TOKEN: 60 * 60, // 1 hour
   REFRESH_TOKEN: 90 * 24 * 60 * 60, // 90 days
-  CIMD_CACHE: 60 * 60, // 1 hour — fallback used only when the fetched document sends no
-  // `Cache-Control: max-age` of its own; when it does, that (clamped) value wins instead
-  // (see cimd.ts's parseMaxAge / MIN_CACHE_SECONDS / MAX_CACHE_SECONDS).
+  /** Used only when the document sends no `Cache-Control: max-age` (see cimd.ts). */
+  CIMD_CACHE: 60 * 60, // 1 hour
 } as const;
+
+/**
+ * A provider failure with its OAuth error code (RFC 6749 §5.2 / RFC 7009) and HTTP status, so
+ * the routes map it to a response without inspecting the message. Throw it from a custom
+ * `OAuthProvider` too; any other error from `/token` becomes `invalid_grant` (400).
+ */
+export class OAuthError extends Error {
+  override name = "OAuthError";
+  constructor(
+    readonly code: string,
+    message: string,
+    readonly status: 400 | 401 = 400,
+  ) {
+    super(message);
+  }
+}
 
 /** An access + refresh token pair returned to the client. */
 export interface TokenPair {
@@ -159,17 +174,6 @@ export interface OAuthProvider {
   normalizeScopes(requested: string[]): string[];
 }
 
-/** Recompute base64url(SHA-256(verifier)) and compare to the stored challenge (PKCE S256 only). */
-async function verifyPkceS256(codeVerifier: string, codeChallenge: string): Promise<boolean> {
-  const data = new TextEncoder().encode(codeVerifier);
-  const digest = await crypto.subtle.digest("SHA-256", data);
-  const base64url = btoa(String.fromCharCode(...new Uint8Array(digest)))
-    .replace(/\+/g, "-")
-    .replace(/\//g, "_")
-    .replace(/=+$/, "");
-  return base64url === codeChallenge;
-}
-
 export function createOAuthProvider(config: OAuthProviderConfig): OAuthProvider {
   const { storage, scopes, baseUrl, allowClientIdMetadataDocuments = false } = config;
   const now = config.now ?? (() => Date.now());
@@ -194,10 +198,10 @@ export function createOAuthProvider(config: OAuthProviderConfig): OAuthProvider 
     return allowed.length > 0 ? allowed : [...defaultScopes];
   }
 
-  /** Reject when a resource was supplied and it isn't this server's resource (RFC 8707 audit fix). */
+  /** Reject when a resource was supplied and it isn't this server's resource (RFC 8707). */
   function assertResource(resource: string): void {
     if (resource && resource !== expectedResource) {
-      throw new Error("Resource mismatch");
+      throw new OAuthError("invalid_target", "Resource mismatch");
     }
   }
 
@@ -258,24 +262,9 @@ export function createOAuthProvider(config: OAuthProviderConfig): OAuthProvider 
       sha256Hex(refreshToken),
     ]);
 
-    const accessData: TokenData = {
-      userId,
-      clientId,
-      resource,
-      scope,
-      createdAt,
-      pairHash: refreshHash,
-      familyId,
-    };
-    const refreshData: TokenData = {
-      userId,
-      clientId,
-      resource,
-      scope,
-      createdAt,
-      pairHash: accessHash,
-      familyId,
-    };
+    const base = { userId, clientId, resource, scope, createdAt, familyId };
+    const accessData: TokenData = { ...base, pairHash: refreshHash };
+    const refreshData: TokenData = { ...base, pairHash: accessHash };
     const family: TokenFamily = { accessHash, refreshHash };
 
     await Promise.all([
@@ -326,7 +315,7 @@ export function createOAuthProvider(config: OAuthProviderConfig): OAuthProvider 
     async registerClient(input) {
       const clientId = crypto.randomUUID();
       const createdAt = now();
-      const redirectUris = input.redirectUris.map((u) => u.toString());
+      const redirectUris = input.redirectUris;
       const clientData: ClientData = {
         clientId,
         redirectUris,
@@ -341,17 +330,17 @@ export function createOAuthProvider(config: OAuthProviderConfig): OAuthProvider 
     },
 
     async issueAuthCode(input) {
-      // RFC 8707 resource validation (audit fix) — reject a mismatched resource at authorize time.
+      // RFC 8707 resource validation — reject a mismatched resource at authorize time.
       assertResource(input.resource);
 
       const redirectUris = await resolveClientRedirectUris(input.clientId);
       if (!redirectUris) {
-        throw new Error("Unknown client");
+        throw new OAuthError("invalid_request", "Unknown client");
       }
 
       // RFC 6749 §3.1.2.3: the redirect_uri must match one the client registered.
       if (!redirectUris.includes(input.redirectUri)) {
-        throw new Error("Redirect URI mismatch");
+        throw new OAuthError("invalid_grant", "Redirect URI mismatch");
       }
 
       const code = randomToken();
@@ -378,13 +367,13 @@ export function createOAuthProvider(config: OAuthProviderConfig): OAuthProvider 
     },
 
     async exchangeCode(input) {
-      // RFC 8707 resource validation (audit fix).
+      // RFC 8707 resource validation.
       assertResource(input.resource);
 
       const codeKey = authCodeKey(await sha256Hex(input.code));
       const raw = await storage.get(codeKey);
       if (!raw) {
-        throw new Error("Invalid or expired authorization code");
+        throw new OAuthError("invalid_grant", "Invalid or expired authorization code");
       }
       const stored = JSON.parse(raw) as AuthCodeData | UsedAuthCode;
 
@@ -393,47 +382,45 @@ export function createOAuthProvider(config: OAuthProviderConfig): OAuthProvider 
       // itself can't be used to kill someone else's session.
       if ("usedFamilyId" in stored) {
         if (stored.clientId === input.clientId) {
-          await revokeFamily(stored.usedFamilyId);
-          await storage.delete(codeKey);
+          await Promise.all([revokeFamily(stored.usedFamilyId), storage.delete(codeKey)]);
         }
-        throw new Error("Invalid or expired authorization code");
+        throw new OAuthError("invalid_grant", "Invalid or expired authorization code");
       }
       const codeData = stored;
 
       // A client_id mismatch is refused WITHOUT consuming the code (same reasoning as above).
       if (codeData.clientId !== input.clientId) {
-        throw new Error("Client ID mismatch");
+        throw new OAuthError("invalid_client", "Client ID mismatch", 401);
       }
 
       // Any other failed redemption by the right client consumes the code — a stolen code
       // gets one guess at the verifier, not five minutes of them.
-      const reject = async (message: string): Promise<never> => {
+      const reject = async (error: OAuthError): Promise<never> => {
         await storage.delete(codeKey);
-        throw new Error(message);
+        throw error;
       };
 
       // Defense-in-depth expiry (independent of KV TTL).
       if (isExpired(codeData.createdAt, TTL.AUTH_CODE)) {
-        return reject("Invalid or expired authorization code");
+        return reject(new OAuthError("invalid_grant", "Invalid or expired authorization code"));
       }
 
       // RFC 6749 §4.1.3: redirect_uri is required and must match the authorization request.
       if (!input.redirectUri) {
-        return reject("redirect_uri is required");
+        return reject(new OAuthError("invalid_grant", "redirect_uri is required"));
       }
       if (codeData.redirectUri !== input.redirectUri) {
-        return reject("Redirect URI mismatch");
+        return reject(new OAuthError("invalid_grant", "Redirect URI mismatch"));
       }
 
       // RFC 8707: only enforce when the code was resource-bound at authorize time.
       if (codeData.resource && input.resource !== codeData.resource) {
-        return reject("Resource mismatch");
+        return reject(new OAuthError("invalid_target", "Resource mismatch"));
       }
 
       // PKCE S256 — recompute and compare.
-      const valid = await verifyPkceS256(input.codeVerifier, codeData.codeChallenge);
-      if (!valid) {
-        return reject("PKCE verification failed");
+      if ((await pkceS256Challenge(input.codeVerifier)) !== codeData.codeChallenge) {
+        return reject(new OAuthError("invalid_grant", "PKCE verification failed"));
       }
 
       // Single-use: swap the code for a used-marker before issuing tokens, so a replay is
@@ -489,15 +476,15 @@ export function createOAuthProvider(config: OAuthProviderConfig): OAuthProvider 
       const refreshHash = await sha256Hex(input.refreshToken);
       const raw = await storage.get(refreshTokenKey(refreshHash));
       if (!raw) {
-        throw new Error("Invalid or expired refresh token");
+        throw new OAuthError("invalid_grant", "Invalid or expired refresh token");
       }
       const tokenData = JSON.parse(raw) as TokenData;
 
       if (tokenData.clientId !== input.clientId) {
-        throw new Error("Client ID mismatch");
+        throw new OAuthError("invalid_client", "Client ID mismatch", 401);
       }
       if (isExpired(tokenData.createdAt, refreshTtl)) {
-        throw new Error("Invalid or expired refresh token");
+        throw new OAuthError("invalid_grant", "Invalid or expired refresh token");
       }
 
       // Refresh-token reuse detection (RFC 9700). The family record is the source of
@@ -508,12 +495,12 @@ export function createOAuthProvider(config: OAuthProviderConfig): OAuthProvider 
       const familyRaw = familyId ? await storage.get(tokenFamilyKey(familyId)) : null;
       if (!familyId || !familyRaw) {
         // Family already revoked, or a legacy token with no family — refuse.
-        throw new Error("Invalid or expired refresh token");
+        throw new OAuthError("invalid_grant", "Invalid or expired refresh token");
       }
       const family = JSON.parse(familyRaw) as TokenFamily;
       if (family.refreshHash !== refreshHash) {
         await revokeFamily(familyId);
-        throw new Error("Invalid or expired refresh token (reuse detected)");
+        throw new OAuthError("invalid_grant", "Invalid or expired refresh token (reuse detected)");
       }
 
       // Valid current refresh token — rotate within the same family. issueTokenPair
@@ -540,32 +527,21 @@ export function createOAuthProvider(config: OAuthProviderConfig): OAuthProvider 
       const accessData = accessRaw ? (JSON.parse(accessRaw) as TokenData) : null;
       const refreshData = refreshRaw ? (JSON.parse(refreshRaw) as TokenData) : null;
 
-      if (accessData && accessData.clientId !== input.clientId) {
-        throw new Error("Token was not issued to this client");
-      }
-      if (refreshData && refreshData.clientId !== input.clientId) {
-        throw new Error("Token was not issued to this client");
+      if ([accessData, refreshData].some((d) => d && d.clientId !== input.clientId)) {
+        throw new OAuthError("unauthorized_client", "Token was not issued to this client", 401);
       }
 
-      const deletes: Promise<void>[] = [];
-      if (accessData) deletes.push(storage.delete(accessTokenKey(tokenHash)));
-      if (refreshData) deletes.push(storage.delete(refreshTokenKey(tokenHash)));
-      if (deletes.length > 0) await Promise.all(deletes);
-
-      // Revoke the paired token too (RFC 7009 §2.1 SHOULD).
-      if (accessData?.pairHash) {
-        await storage.delete(refreshTokenKey(accessData.pairHash));
-      }
-      if (refreshData?.pairHash) {
-        await storage.delete(accessTokenKey(refreshData.pairHash));
-      }
-
-      // Tear down the family record: the lineage can't be rotated, and every access token
-      // in it — older generations included — fails verifyAccessToken from now on.
+      // All independent: the token itself, its pair (RFC 7009 §2.1 SHOULD), and the family
+      // record — whose removal makes every access token in the lineage, older generations
+      // included, fail verifyAccessToken from now on.
       const familyId = accessData?.familyId ?? refreshData?.familyId;
-      if (familyId) {
-        await storage.delete(tokenFamilyKey(familyId));
-      }
+      await Promise.all([
+        accessData && storage.delete(accessTokenKey(tokenHash)),
+        refreshData && storage.delete(refreshTokenKey(tokenHash)),
+        accessData?.pairHash && storage.delete(refreshTokenKey(accessData.pairHash)),
+        refreshData?.pairHash && storage.delete(accessTokenKey(refreshData.pairHash)),
+        familyId && storage.delete(tokenFamilyKey(familyId)),
+      ]);
       return { userId: accessData?.userId ?? refreshData?.userId };
     },
   };

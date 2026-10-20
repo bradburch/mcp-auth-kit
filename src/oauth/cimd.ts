@@ -3,6 +3,7 @@
 // an HTTPS URL pointing at a JSON document describing the client (see the MCP spec's
 // "Client ID Metadata Documents" section, deprecating RFC 7591 DCR per changelog item 4).
 import { isValidRedirectUri } from "./redirect-uri.js";
+import { readStreamCapped } from "../http/body-limit.js";
 
 /** Response body cap for a metadata document fetch — these are small JSON files. */
 const MAX_DOCUMENT_BYTES = 16 * 1024;
@@ -30,15 +31,18 @@ export interface ClientIdMetadata {
  * raw-IPv4 check below and the IPv4-mapped/compatible IPv6 check, so the range list lives
  * in exactly one place.
  */
+const PRIVATE_IPV4 = [
+  /^127\./,
+  /^10\./,
+  /^192\.168\./,
+  /^172\.(1[6-9]|2\d|3[01])\./,
+  /^169\.254\./,
+  /^0\./, // 0.0.0.0/8
+  /^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./, // 100.64.0.0/10 CGNAT
+];
+
 function isPrivateIPv4(quad: string): boolean {
-  if (/^127\./.test(quad)) return true;
-  if (/^10\./.test(quad)) return true;
-  if (/^192\.168\./.test(quad)) return true;
-  if (/^172\.(1[6-9]|2\d|3[01])\./.test(quad)) return true;
-  if (/^169\.254\./.test(quad)) return true;
-  if (/^0\./.test(quad)) return true; // 0.0.0.0/8
-  if (/^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(quad)) return true; // 100.64.0.0/10 CGNAT
-  return false;
+  return PRIVATE_IPV4.some((r) => r.test(quad));
 }
 
 /**
@@ -96,54 +100,6 @@ function parseMaxAge(cacheControl: string | null): number | undefined {
   return Math.min(Math.max(raw, MIN_CACHE_SECONDS), MAX_CACHE_SECONDS);
 }
 
-/** Read a Response body with a byte cap enforced while streaming. Returns null if exceeded or aborted. */
-async function readCappedText(
-  res: Response,
-  maxBytes: number,
-  signal: AbortSignal,
-): Promise<string | null> {
-  const body = res.body;
-  if (!body) return "";
-  const reader = body.getReader();
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-
-  // Create a promise that rejects if the abort signal fires, allowing us to race it against reader.read().
-  const abortPromise = new Promise<never>((_, reject) =>
-    signal.addEventListener("abort", () => reject(new Error("abort"))),
-  );
-
-  try {
-    for (;;) {
-      // Race the read against abort — if abort fires, Promise.race will reject with the abortPromise.
-      const { done, value } = await Promise.race([reader.read(), abortPromise]);
-      if (done) break;
-      total += value.byteLength;
-      if (total > maxBytes) {
-        await reader.cancel();
-        return null;
-      }
-      chunks.push(value);
-    }
-  } catch {
-    // Abort signal fired or other error; try to cancel reader and return null.
-    // On an already-errored stream (from abort), cancel() itself may reject; swallow it.
-    try {
-      await reader.cancel();
-    } catch {
-      // Cancel rejection is expected on an errored stream; ignore and fall through.
-    }
-    return null;
-  }
-  const buf = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    buf.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return new TextDecoder().decode(buf);
-}
-
 /**
  * Fetch and validate a Client ID Metadata Document. Returns null (never throws) on any
  * validation failure — an invalid/unreachable document means "not a CIMD client," not a
@@ -173,7 +129,10 @@ export async function fetchClientIdMetadata(clientIdUrl: string): Promise<Client
 
     const maxAgeSeconds = parseMaxAge(res.headers.get("cache-control"));
 
-    const text = await readCappedText(res, MAX_DOCUMENT_BYTES, controller.signal);
+    // A body over the cap, an abort (timeout), or a stream error all mean "not a CIMD client".
+    const text = await readStreamCapped(res.body, MAX_DOCUMENT_BYTES, controller.signal).catch(
+      () => null,
+    );
     if (text === null) return null;
 
     let doc: unknown;
@@ -194,7 +153,7 @@ export async function fetchClientIdMetadata(clientIdUrl: string): Promise<Client
     // localhost/127.0.0.1 http): a CIMD document must not be able to smuggle in a redirect
     // URI that DCR would have rejected. Any one bad entry invalidates the whole document,
     // consistent with this function's all-or-nothing "invalid → null" contract.
-    if (!redirectUris.every((u) => isValidRedirectUri(u))) return null;
+    if (!redirectUris.every(isValidRedirectUri)) return null;
 
     return {
       clientId: clientIdUrl,

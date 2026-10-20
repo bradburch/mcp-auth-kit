@@ -1,19 +1,22 @@
 // Shared test helpers for driving the kit's MCP server as a Hono app.
 import type { Hono } from "hono";
+import { pkceS256Challenge } from "../src/crypto.js";
+import type { OAuthProvider } from "../src/oauth/provider.js";
 
 /** Compute an S256 PKCE challenge from a fixed verifier (deterministic for tests). */
 export async function pkce() {
   const verifier = "verifier-fixed-string-1234567890-abcdefghij";
-  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier));
-  const challenge = btoa(String.fromCharCode(...new Uint8Array(digest)))
-    .replace(/\+/g, "-")
-    .replace(/\//g, "_")
-    .replace(/=+$/, "");
-  return { verifier, challenge };
+  return { verifier, challenge: await pkceS256Challenge(verifier) };
 }
 
-/** Drive register → authorize(verify) → token; return the issued access token. */
-export async function getToken(app: Hono): Promise<string> {
+/**
+ * Drive register → authorize(verify) → token over HTTP; return the issued pair and client.
+ * `scope` is sent on the authorize request when given (omitted = the default scopes).
+ */
+export async function getTokenPair(
+  app: Hono,
+  { scope }: { scope?: string } = {},
+): Promise<{ accessToken: string; refreshToken: string; clientId: string; expiresIn: number }> {
   const reg = await (
     await app.request("/register", {
       method: "POST",
@@ -35,6 +38,7 @@ export async function getToken(app: Hono): Promise<string> {
       state: "s",
       resource: "https://example.test/mcp",
       email: "a@b.c",
+      ...(scope !== undefined && { scope }),
     }).toString(),
   });
   const location = authRes.headers.get("location")!;
@@ -53,8 +57,45 @@ export async function getToken(app: Hono): Promise<string> {
       }).toString(),
     })
   ).json();
-  return tok.access_token as string;
+  return {
+    accessToken: tok.access_token,
+    refreshToken: tok.refresh_token,
+    clientId: reg.client_id,
+    expiresIn: tok.expires_in,
+  };
 }
+
+/** Drive register → authorize(verify) → token; return the issued access token. */
+export async function getToken(app: Hono): Promise<string> {
+  return (await getTokenPair(app)).accessToken;
+}
+
+/**
+ * Drive register → issueAuthCode → (deferred) exchangeCode directly against a provider for
+ * `https://app/cb` / user-1. `exchange` redeems the code; pass a verifier to override PKCE.
+ */
+export async function issueViaProvider(
+  p: OAuthProvider,
+  { resource = "https://example.test/mcp", scope = ["account:read"] } = {},
+) {
+  const { clientId } = await p.registerClient({ redirectUris: ["https://app/cb"] });
+  const { challenge, verifier } = await pkce();
+  const { code } = await p.issueAuthCode({
+    clientId,
+    redirectUri: "https://app/cb",
+    codeChallenge: challenge,
+    scope,
+    userId: "user-1",
+    resource,
+  });
+  const exchange = (codeVerifier = verifier) =>
+    p.exchangeCode({ code, clientId, redirectUri: "https://app/cb", codeVerifier, resource });
+  return { clientId, code, exchange };
+}
+
+/** The first text block of a tool result. */
+export const toolText = (result: unknown) =>
+  (result as { content: Array<{ text: string }> }).content[0]!.text;
 
 /** The per-request `_meta` envelope a 2026-07-28 client attaches to every request. */
 export const MODERN_META = {

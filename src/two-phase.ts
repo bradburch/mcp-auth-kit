@@ -144,11 +144,11 @@ function isCallToolResult(value: unknown): value is ToolResult {
  */
 export function toToolResult(value: unknown): ToolResult {
   if (typeof value === "string") return { content: [{ type: "text", text: value }] };
-  const result: ToolResult = isCallToolResult(value)
-    ? value
-    : { content: [{ type: "text", text: JSON.stringify(value) ?? "null" }] };
-  JSON.stringify(result); // surface unserializable passthrough values here, not in the transport
-  return result;
+  if (isCallToolResult(value)) {
+    JSON.stringify(value); // surface an unserializable passthrough here, not in the transport
+    return value;
+  }
+  return { content: [{ type: "text", text: JSON.stringify(value) ?? "null" }] };
 }
 
 /** Wrap an arbitrary JSON-serialisable value as a single-text-block tool result. */
@@ -175,7 +175,7 @@ export function registerMutatingTool(
   tool: MutatingToolDef,
   ctx: ToolContext,
 ): void {
-  const annotations = { destructiveHint: true, ...(tool.annotations ?? {}) };
+  const annotations = { destructiveHint: true, ...tool.annotations };
 
   server.registerTool(
     tool.name,
@@ -220,6 +220,41 @@ export function registerMutatingTool(
   );
 }
 
+const EXPIRED = "This confirmation has expired or was already used.";
+
+/**
+ * Load the previewed mutation behind a confirmation token and consume the token. Returns a
+ * refusal message instead when it can't run. Never touches the idempotency claim — the caller
+ * releases that in one place.
+ */
+async function loadConfirmation(
+  ctx: ToolContext,
+  cKey: string,
+  byName: Map<string, MutatingToolDef>,
+): Promise<{ tool: MutatingToolDef; payload: ConfirmPayload; rawPayload: string } | string> {
+  const rawPayload = await ctx.storage.get(cKey);
+  if (rawPayload === null) return EXPIRED; // expired, invalid, or already used
+
+  let payload: ConfirmPayload;
+  try {
+    payload = JSON.parse(rawPayload) as ConfirmPayload;
+  } catch {
+    return "Invalid confirmation payload.";
+  }
+
+  // Bind the confirmation to the user who previewed it — a leaked token must not let another
+  // user execute someone else's previewed mutation. Check ownership BEFORE consuming the
+  // single-use token so a wrong-user attempt can't burn the rightful user's token (DoS).
+  if (payload.userId !== ctx.userId) return EXPIRED;
+
+  // Ownership confirmed — consume the token (single-use) before executing.
+  await ctx.storage.delete(cKey);
+
+  const tool = byName.get(payload.toolName);
+  if (!tool) return `Unknown mutating tool: ${payload.toolName}`;
+  return { tool, payload, rawPayload };
+}
+
 /** Input schema for the shared confirm_request tool. */
 const CONFIRM_INPUT = z.object({
   confirmationToken: z.string(),
@@ -252,10 +287,12 @@ export function registerConfirmTool(
       const { confirmationToken, idempotencyKey: rawKey } = input as z.infer<typeof CONFIRM_INPUT>;
 
       const idemKey = idempotencyKey(ctx.userId, rawKey);
-      const tokenHash = await sha256Hex(confirmationToken);
 
       // (a) Idempotency check — return a cached RESULT, or back off on a pending claim.
-      const cached = await ctx.storage.get(idemKey);
+      const [tokenHash, cached] = await Promise.all([
+        sha256Hex(confirmationToken),
+        ctx.storage.get(idemKey),
+      ]);
       if (cached !== null) {
         // A corrupt entry gets a generic error (a JSON.parse message would echo the stored
         // string back). Deliberately NOT deleted: with no compare-and-swap a delete could wipe
@@ -288,48 +325,21 @@ export function registerConfirmTool(
         ttlSeconds: IDEMPOTENCY_TTL_SECONDS,
       });
 
-      // Anything that throws between the claim and execute (a storage error) releases the
-      // claim — nothing ran yet — then propagates to `guarded` for sanitizing.
-      let tool: MutatingToolDef | undefined;
-      let payload: ConfirmPayload;
-      let rawPayload: string | null;
+      // Release the claim on any refusal or storage error before execute — nothing ran yet.
+      // A storage error then propagates to `guarded` for sanitizing.
       const cKey = confirmKey(tokenHash);
+      let loaded: Awaited<ReturnType<typeof loadConfirmation>>;
       try {
-        rawPayload = await ctx.storage.get(cKey);
-        if (rawPayload === null) {
-          // Expired / invalid / already used — release the claim so a fresh confirm can run.
-          await ctx.storage.delete(idemKey);
-          return confirmRefused("This confirmation has expired or was already used.");
-        }
-
-        try {
-          payload = JSON.parse(rawPayload) as ConfirmPayload;
-        } catch {
-          await ctx.storage.delete(idemKey);
-          return confirmRefused("Invalid confirmation payload.");
-        }
-
-        // Bind the confirmation to the user who previewed it — a leaked token must not let
-        // another user execute someone else's previewed mutation. Check ownership BEFORE
-        // consuming the single-use token so a wrong-user attempt can't burn the rightful
-        // user's token (denial of service).
-        if (payload.userId !== ctx.userId) {
-          await ctx.storage.delete(idemKey);
-          return confirmRefused("This confirmation has expired or was already used.");
-        }
-
-        // Ownership confirmed — consume the token (single-use) before executing.
-        await ctx.storage.delete(cKey);
-
-        tool = byName.get(payload.toolName);
-        if (!tool) {
-          await ctx.storage.delete(idemKey);
-          return confirmRefused(`Unknown mutating tool: ${payload.toolName}`);
-        }
+        loaded = await loadConfirmation(ctx, cKey, byName);
       } catch (e) {
         await ctx.storage.delete(idemKey).catch(() => {});
         throw e;
       }
+      if (typeof loaded === "string") {
+        await ctx.storage.delete(idemKey);
+        return confirmRefused(loaded);
+      }
+      const { tool, payload, rawPayload } = loaded;
 
       // (c) Execute. Only a throw from execute itself counts as failure: restore the consumed
       //     token and release the claim so a legitimate retry (same token + key) can re-run.
@@ -338,10 +348,10 @@ export function registerConfirmTool(
       try {
         raw = await tool.mutating.execute(payload.data, ctx);
       } catch (e) {
-        await ctx.storage
-          .put(cKey, rawPayload, { ttlSeconds: CONFIRM_TTL_SECONDS })
-          .catch(() => {});
-        await ctx.storage.delete(idemKey);
+        await Promise.all([
+          ctx.storage.put(cKey, rawPayload, { ttlSeconds: CONFIRM_TTL_SECONDS }).catch(() => {}),
+          ctx.storage.delete(idemKey),
+        ]);
         return toolFailure(ctx, payload.toolName, "execute", e);
       }
 
@@ -355,28 +365,27 @@ export function registerConfirmTool(
         toolFailure(ctx, payload.toolName, "execute", e);
         result = jsonResult({ success: true });
       }
-      try {
-        const done: IdempotencyRecord = { tokenHash, result };
-        await ctx.storage.put(idemKey, JSON.stringify(done), {
-          ttlSeconds: IDEMPOTENCY_TTL_SECONDS,
-        });
-      } catch (e) {
-        // The client still gets its result, so it won't retry; the pending sentinel expires.
-        toolFailure(ctx, payload.toolName, "storage", e);
-      }
-
-      try {
-        await ctx.hooks.onMutation?.({
-          userId: ctx.userId,
-          toolName: payload.toolName,
-          summary: payload.summary,
-          data: payload.data,
-          result,
-          idempotencyKey: rawKey,
-        });
-      } catch {
-        // Swallowed like every hook — the mutation already succeeded.
-      }
+      // Cache the result and run the (awaited) onMutation hook concurrently — independent.
+      const done: IdempotencyRecord = { tokenHash, result };
+      await Promise.all([
+        ctx.storage
+          .put(idemKey, JSON.stringify(done), { ttlSeconds: IDEMPOTENCY_TTL_SECONDS })
+          // The client still gets its result, so it won't retry; the pending claim expires.
+          .catch((e) => void toolFailure(ctx, payload.toolName, "storage", e)),
+        Promise.resolve()
+          .then(() =>
+            ctx.hooks.onMutation?.({
+              userId: ctx.userId,
+              toolName: payload.toolName,
+              summary: payload.summary,
+              data: payload.data,
+              result,
+              idempotencyKey: rawKey,
+            }),
+          )
+          // Swallowed like every hook — the mutation already succeeded.
+          .catch(() => {}),
+      ]);
 
       return result;
     }),
