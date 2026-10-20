@@ -43,7 +43,8 @@ describe("oauth provider", () => {
     });
     expect(tokens.accessToken).toBeTruthy();
     const verified = await p.verifyAccessToken(tokens.accessToken);
-    expect(verified).toEqual({ userId: "user-1", scopes: ["account:read"] });
+    expect(verified).toMatchObject({ userId: "user-1", scopes: ["account:read"] });
+    expect(verified!.clientId).toBeTruthy();
   });
 
   it("rejects a wrong PKCE verifier", async () => {

@@ -6,6 +6,22 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking:** migrated from `@modelcontextprotocol/sdk` v1 to the v2 SDK. Peer dependencies
+  are now `@modelcontextprotocol/server ^2.3.1`, `hono ^4.11.4` and `zod ^4.2.0` (zod 3 is no
+  longer supported).
+- `POST /mcp` now serves the MCP **2026-07-28** revision (`_meta` envelope, `server/discover`,
+  `resultType`). 2025-era clients that `initialize` are served by the SDK's stateless legacy
+  fallback; those responses arrive as a single-event SSE stream instead of a JSON body.
+- `Mcp-Method` / `Mcp-Name` / `MCP-Protocol-Version` validation, the 1 MB body cap on
+  `/mcp`, and the per-tool `insufficient_scope` 403 are now enforced by the SDK. The 403 body
+  is OAuth JSON (`{"error":"insufficient_scope",...}`) rather than a JSON-RPC envelope, and it
+  now also covers calls inside a legacy JSON-RPC batch (which previously got a 200 with an
+  `isError` result).
+- `OAuthProvider.verifyAccessToken` also returns the token's `clientId`, which is now passed
+  to the SDK's `authInfo` (it was always `""`).
+
 ## [0.3.0] - 2026-09-27
 
 ### Added

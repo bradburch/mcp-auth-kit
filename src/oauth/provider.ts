@@ -120,7 +120,9 @@ export interface OAuthProvider {
     codeVerifier: string;
     resource: string;
   }): Promise<TokenPair>;
-  verifyAccessToken(token: string): Promise<{ userId: string; scopes: string[] } | null>;
+  verifyAccessToken(
+    token: string,
+  ): Promise<{ userId: string; clientId: string; scopes: string[] } | null>;
   refresh(input: { refreshToken: string; clientId: string }): Promise<TokenPair>;
   revoke(input: { token: string; clientId: string }): Promise<void>;
   /**
@@ -394,7 +396,7 @@ export function createOAuthProvider(config: OAuthProviderConfig): OAuthProvider 
       if (tokenData.resource && tokenData.resource !== expectedResource) {
         return null;
       }
-      return { userId: tokenData.userId, scopes: tokenData.scope };
+      return { userId: tokenData.userId, clientId: tokenData.clientId, scopes: tokenData.scope };
     },
 
     async refresh(input) {

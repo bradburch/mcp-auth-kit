@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { z } from "zod";
 import { createMcpServer } from "../src/server.js";
 import { createMemoryStorage } from "../src/storage/memory.js";
-import { getToken } from "./helpers.js";
+import { getToken, mcpRequest, readRpc } from "./helpers.js";
 
 function makeApp() {
   return createMcpServer({
@@ -31,22 +31,9 @@ describe("createMcpServer read tools", () => {
   it("lists the echo tool for an authenticated caller", async () => {
     const app = makeApp();
     const token = await getToken(app);
-    const res = await app.request("/mcp", {
-      method: "POST",
-      headers: {
-        authorization: `Bearer ${token}`,
-        "content-type": "application/json",
-        accept: "application/json, text/event-stream",
-      },
-      body: JSON.stringify({
-        jsonrpc: "2.0",
-        id: 1,
-        method: "tools/list",
-        params: {},
-      }),
-    });
+    const res = await mcpRequest(app, token, "tools/list");
     expect(res.status).toBe(200);
-    const body = await res.json();
+    const body = await readRpc(res);
     const names = body.result.tools.map((t: any) => t.name);
     expect(names).toContain("echo");
   });

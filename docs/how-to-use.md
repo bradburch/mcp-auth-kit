@@ -35,7 +35,7 @@ MCP client ──discovery──▶ /.well-known/*
 ```bash
 npm install mcp-oauth-kit
 # peer dependencies (not bundled):
-npm install hono @modelcontextprotocol/sdk zod
+npm install hono @modelcontextprotocol/server zod
 ```
 
 Node **22+** is required.
@@ -284,11 +284,11 @@ given caller, `confirm_request` won't appear in that caller's `tools/list` eithe
 This is what a spec-compliant MCP client does under the hood. You can reproduce it with `curl`
 to verify your server. It uses PKCE (S256).
 
-> **Both `Accept` values are required.** `POST /mcp` requires
-> `accept: application/json, text/event-stream` — the SDK transport rejects a request
-> missing either value with `406 Not Acceptable`, even though this kit's stateless JSON
-> mode never actually streams SSE. The curl commands below include it; a plain
-> `fetch`/Postman request that omits it will fail.
+> **MCP request shape (2026-07-28).** `POST /mcp` speaks the 2026-07-28 revision: every
+> request carries the `MCP-Protocol-Version`, `Mcp-Method` (and for `tools/call`, `Mcp-Name`)
+> headers matching the body, plus a `_meta` envelope in `params`. Send
+> `accept: application/json, text/event-stream`. A client that instead opens with a 2025-era
+> `initialize` still works via the SDK's stateless fallback (answered as a one-event SSE stream).
 
 ```bash
 BASE=http://localhost:3000
@@ -324,12 +324,18 @@ ACCESS=$(curl -s -X POST $BASE/token \
   --data-urlencode "code_verifier=$VERIFIER" \
   --data-urlencode "resource=$BASE/mcp" | jq -r .access_token)
 
-# (e) Call a tool over MCP
+# (e) Call a tool over MCP (2026-07-28 request: headers + _meta envelope)
 curl -s -X POST $BASE/mcp \
   -H "authorization: Bearer $ACCESS" \
   -H 'content-type: application/json' \
   -H 'accept: application/json, text/event-stream' \
-  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"whoami","arguments":{}}}' | jq
+  -H 'mcp-protocol-version: 2026-07-28' \
+  -H 'mcp-method: tools/call' \
+  -H 'mcp-name: whoami' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"whoami","arguments":{},
+       "_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28",
+                "io.modelcontextprotocol/clientInfo":{"name":"curl","version":"1"},
+                "io.modelcontextprotocol/clientCapabilities":{}}}}' | jq
 ```
 
 > **`iss` on the redirect.** Step (c)'s 302 now also carries `&iss=<baseUrl>` (RFC 9207) —
